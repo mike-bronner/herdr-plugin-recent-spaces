@@ -1,0 +1,11 @@
+id = "mikebronner.recent-spaces"
+name = "Recent Spaces"
+version = "0.2.0"
+min_herdr_version = "0.8.0"
+description = "Keep the spaces sidebar in most-recently-used order"
+platforms = ["macos", "linux"]
+
+# Promote a workspace toward the top once it has been dwelled in.
+[[events]]
+on = "workspace.focused"
+command = ["python3", "bin/promote-recent"]
