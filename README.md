@@ -20,12 +20,39 @@ focus never moved. The hook itself returns immediately and never stalls the UI.
 ## Install
 
 ```sh
+herdr plugin install mike-bronner/herdr-plugin-recent-spaces
+```
+
+To work on the plugin instead, clone it and link the working copy by absolute
+path:
+
+```sh
 git clone git@github.com:mike-bronner/herdr-plugin-recent-spaces.git
-cd herdr-plugin-recent-spaces
-herdr plugin link
+herdr plugin link /absolute/path/to/herdr-plugin-recent-spaces
 ```
 
 Requires `python3` on the PATH.
+
+## Configure
+
+Settings live in a `.env` file in the plugin config directory:
+
+```sh
+herdr plugin config-dir mikebronner.recent-spaces
+# /Users/you/.config/herdr/plugins/config/mikebronner.recent-spaces
+```
+
+```ini
+# seconds of dwell before a workspace is promoted (default: 10)
+HERDR_RECENT_DWELL=10
+
+# label of the workspace pinned at the top (default: ~)
+HERDR_RECENT_PIN=~
+```
+
+Both keys are optional. Real environment variables win over the file, a comment
+needs a line of its own, and anything the plugin cannot parse falls back to the
+default rather than breaking the hook.
 
 ## Tests
 

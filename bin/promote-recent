@@ -10,16 +10,57 @@ a waking child that finds a newer generation exits without touching anything.
 The parent never blocks, so the event hook cannot stall Herdr's UI.
 
 The pinned workspace (default: home, label "~") is always held at index 0.
+
+Settings are read from the environment, pre-filled from $HERDR_PLUGIN_CONFIG_DIR/.env
+so they survive across sessions. Herdr injects that directory, and the detached child
+inherits the parent environment, so both halves of the hook see the same settings.
+An unreadable line or an unparsable value falls back to the default rather than
+failing: this hook has no screen, and it must always exit 0.
 """
 import json, os, socket, subprocess, sys, time, itertools
 
-DWELL_SECONDS = float(os.environ.get("HERDR_RECENT_DWELL", "10"))
+
+def load_env_file(path):
+    """Pre-fill os.environ from simple KEY=VALUE lines in path.
+
+    The real environment wins: a key already set is left untouched. Blank lines,
+    "#" comments and lines without "=" are skipped, and one layer of matching
+    single or double quotes is stripped from the value. A missing or unreadable
+    file is a no-op — an absent config file is the normal case, not an error.
+    """
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        # Skip silently: no screen, must exit 0 — one bad line must not stop the reorder.
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key:
+            os.environ.setdefault(key, value)
+
+
+CONFIG_DIR = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
+if CONFIG_DIR:
+    load_env_file(os.path.join(CONFIG_DIR, ".env"))
+
+DEFAULT_DWELL = 10.0
+try:
+    DWELL_SECONDS = float(os.environ.get("HERDR_RECENT_DWELL", DEFAULT_DWELL))
+except ValueError:
+    DWELL_SECONDS = DEFAULT_DWELL      # same rule: a typo falls back, it never breaks the hook
 PINNED_LABEL = os.environ.get("HERDR_RECENT_PIN", "~")
 PROMOTE_INDEX = 1                      # index 0 belongs to the pin
 
 STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser("~/.config/herdr")
 STATE = os.path.join(STATE_DIR, "recent-spaces-state.json")
-SOCK = os.path.expanduser("~/.config/herdr/herdr.sock")
+SOCK = os.environ.get("HERDR_SOCKET_PATH") or os.path.expanduser("~/.config/herdr/herdr.sock")
 _ids = itertools.count(1)
 
 def call(method, params=None):
