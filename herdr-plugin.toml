@@ -1,22 +1,20 @@
 id = "mikebronner.recent-spaces"
 name = "Recent Spaces"
-version = "0.4.0"
-min_herdr_version = "0.8.0"
+version = "0.5.0"
+min_herdr_version = "0.9.0"
 description = "Keep the spaces sidebar in most-recently-used order"
 platforms = ["macos", "linux"]
 
-# Promote a workspace toward the top once it has been dwelled in.
+# One long-lived watcher, started once when the Herdr server starts.
 #
-# Two events, because neither one alone sees every focus change. On Herdr 0.9.0
-# workspace.focused fires only for API-driven focus (a workspace.focus RPC, or
-# this plugin's own workspace.move); focus changed in the UI never reaches the
-# hook. tab.focused does follow UI activity, so it carries the UI-driven case.
-# The hook ignores an event that does not change the focused workspace, so tab
-# switching inside one workspace costs nothing.
-[[events]]
-on = "workspace.focused"
-command = ["python3", "bin/promote-recent"]
-
-[[events]]
-on = "tab.focused"
-command = ["python3", "bin/promote-recent"]
+# There is deliberately no [[events]] hook. On Herdr 0.9.0 a focus change
+# reaches a plugin only when the change came through Herdr's API, so focus you
+# change in the UI — the case this plugin exists for — dispatches nothing,
+# whichever event kind is subscribed. bin/watch-focus polls workspace.list
+# instead, which does report UI-driven focus. See docs/herdr-behaviour.md.
+#
+# A [[startup]] command takes effect only when the server restarts. That is
+# unlike an [[events]] change, which Herdr picks up on the very next event
+# because it re-reads this file at dispatch time.
+[[startup]]
+command = ["/usr/bin/python3", "bin/watch-focus"]

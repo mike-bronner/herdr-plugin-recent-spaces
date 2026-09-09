@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Watch which workspace has focus, and promote it once it has been dwelled in.
+
+Herdr starts this from the manifest's [[startup]] section and never stops it. It
+runs for the whole life of the server, polls workspace.list every POLL_SECONDS,
+and moves a workspace to the top of the sidebar once focus has rested on it for
+the dwell period. The pinned workspace (default: home, label "~") is held at
+index 0 and never promoted.
+
+Why it polls rather than subscribing
+------------------------------------
+Herdr 0.9.0 dispatches a focus change to a plugin only when the change came
+through its own API. Focus changed in the UI — a click on the sidebar, a
+keyboard shortcut — emits workspace.focus in the server log and reaches no
+plugin at all. That gate is on the ORIGIN of the change and not on the kind of
+event, so subscribing to more event kinds buys nothing: measured in an isolated
+server, an events.subscribe stream held open across three UI-driven focus
+changes received nothing, while an API-driven one pushed both workspace.focused
+and tab.focused in the same millisecond. workspace.list does report UI-driven
+focus correctly, so the information is there and only the notification is
+missing. docs/herdr-behaviour.md carries the measurements.
+
+Exactly one watcher may run
+---------------------------
+Herdr does NOT kill a startup process when the server stops: it is reparented to
+init and keeps running. Every server restart therefore starts another watcher on
+top of any survivors, and duplicates would each promote independently and fight
+over the sidebar order. Worse, startup commands and event hooks share ONE pool of
+32 concurrent plugin commands, and a long-lived watcher holds a slot for as long
+as it lives. Accumulated orphans would exhaust that pool, at which point every
+plugin hook on the machine stops dispatching with nothing surfaced. So a watcher
+that is no longer wanted has to retire itself, by both of the routes below.
+
+Nothing here may raise
+----------------------
+There is no supervisor: a startup command that exits is not restarted, and no
+event hook is left as a floor. The plugin is dead until the next server restart
+if this process ends, so the loop swallows everything and keeps going.
+"""
+import hashlib, itertools, json, os, socket, sys, time, uuid
+
+
+def load_env_file(path):
+    """Pre-fill os.environ from simple KEY=VALUE lines in path.
+
+    The real environment wins: a key already set is left untouched. Blank lines,
+    "#" comments and lines without "=" are skipped, and one layer of matching
+    single or double quotes is stripped from the value. A missing or unreadable
+    file is a no-op — an absent config file is the normal case, not an error.
+    """
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        # Skip silently: no screen, and one bad line must not stop the reorder.
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key:
+            os.environ.setdefault(key, value)
+
+
+CONFIG_DIR = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
+if CONFIG_DIR:
+    load_env_file(os.path.join(CONFIG_DIR, ".env"))
+
+DEFAULT_DWELL = 10.0
+try:
+    DWELL_SECONDS = float(os.environ.get("HERDR_RECENT_DWELL", DEFAULT_DWELL))
+except ValueError:
+    DWELL_SECONDS = DEFAULT_DWELL      # a typo falls back; it never breaks the watcher
+PINNED_LABEL = os.environ.get("HERDR_RECENT_PIN", "~")
+PROMOTE_INDEX = 1                      # index 0 belongs to the pin
+
+POLL_SECONDS = 2.0                     # a promotion lands between dwell and dwell + this
+GRACE_SECONDS = 30.0                   # unreachable this long and the server is gone for good
+
+STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser("~/.config/herdr")
+SOCK = os.environ.get("HERDR_SOCKET_PATH") or os.path.expanduser("~/.config/herdr/herdr.sock")
+_ids = itertools.count(1)
+
+
+def claim_path():
+    """The claim file for THIS server's socket.
+
+    Keyed by socket path because HERDR_PLUGIN_STATE_DIR carries no session
+    component: two named sessions in one config root share the directory, and a
+    single claim file would make each session's watcher retire the other's.
+    """
+    digest = hashlib.sha1(SOCK.encode("utf-8", "replace")).hexdigest()[:12]
+    return os.path.join(STATE_DIR, "recent-spaces-watcher-%s.json" % digest)
+
+
+def write_claim(token):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = claim_path() + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"token": token, "pid": os.getpid(), "socket": SOCK}, f)
+    os.replace(tmp, claim_path())
+
+
+def read_claim():
+    """The token of the watcher that currently owns this socket, or None."""
+    try:
+        with open(claim_path()) as f:
+            return json.load(f).get("token")
+    except Exception:
+        return None
+
+
+def call(method, params=None):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    try:
+        s.connect(SOCK)
+        s.sendall((json.dumps({"id": f"recent-{next(_ids)}", "method": method,
+                               "params": params or {}}) + "\n").encode())
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        return json.loads(buf.split(b"\n")[0].decode())
+    finally:
+        s.close()
+
+
+def workspaces():
+    return call("workspace.list").get("result", {}).get("workspaces", [])
+
+
+def hold_pin(ws, order):
+    """Keep the pinned workspace at index 0. Answers its id, or None."""
+    pin = next((w["workspace_id"] for w in ws if w.get("label") == PINNED_LABEL), None)
+    if pin and order and order.index(pin) != 0:
+        call("workspace.move", {"workspace_id": pin, "insert_index": 0})
+    return pin
+
+
+class Dwell:
+    """Where focus is resting, since when, and whether that rest was acted on.
+
+    The old event-hook design carried this across processes in a state file,
+    behind a generation counter, because a hook had to return at once and could
+    remember nothing. A watcher that lives for the whole session remembers in
+    memory, so none of that machinery is needed.
+    """
+
+    def __init__(self):
+        self.workspace_id = None
+        self.since = 0.0
+        self.promoted = False
+
+    def observe(self, workspace_id, now):
+        """Restart the clock when focus has moved to a different workspace."""
+        if workspace_id != self.workspace_id:
+            self.workspace_id = workspace_id
+            self.since = now
+            self.promoted = False
+
+
+def tick(dwell, now):
+    """One poll. Holds the pin, runs the dwell clock, promotes when it expires."""
+    ws = workspaces()
+    if not ws:
+        return
+    order = [w["workspace_id"] for w in ws]
+    pin = hold_pin(ws, order)
+
+    current = next((w["workspace_id"] for w in ws if w.get("focused")), None)
+    dwell.observe(current, now)
+
+    # Focus on the pin still restarts the clock above, so returning to a
+    # workspace later starts its dwell afresh rather than resuming an old one.
+    if not current or current == pin or dwell.promoted:
+        return
+    if now - dwell.since < DWELL_SECONDS:
+        return
+
+    # Settled either way: an already-promoted workspace must not be re-examined
+    # every poll for as long as focus stays on it.
+    dwell.promoted = True
+    if order.index(current) != PROMOTE_INDEX:
+        call("workspace.move", {"workspace_id": current, "insert_index": PROMOTE_INDEX})
+
+
+def watch(sleep=time.sleep, clock=time.time):
+    """Poll until this watcher is retired. Returns; it never raises."""
+    token = uuid.uuid4().hex
+    try:
+        write_claim(token)
+    except Exception:
+        return          # no claim, no authority to move anything
+
+    dwell = Dwell()
+    unreachable_since = None
+    while True:
+        try:
+            # A newer watcher has taken the socket, so this one is the survivor
+            # of an earlier server run and must go. Both may promote during the
+            # one poll before this is seen; both would move the same workspace
+            # to the same index, so the overlap is harmless.
+            if read_claim() != token:
+                return
+            tick(dwell, clock())
+            unreachable_since = None
+        except Exception:
+            # Every failure here is the socket. Ride out a hiccup, but exit once
+            # the server has been gone long enough to have been quit for good.
+            now = clock()
+            if unreachable_since is None:
+                unreachable_since = now
+            elif now - unreachable_since >= GRACE_SECONDS:
+                return
+        sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    try:
+        watch()
+    except Exception as e:                       # pragma: no cover - last resort
+        print(f"watch-focus: {e}", file=sys.stderr)
+    sys.exit(0)
