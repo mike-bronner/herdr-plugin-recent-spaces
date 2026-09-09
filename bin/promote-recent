@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """Promote a workspace to the top of the sidebar once dwelled in for N seconds.
 
-Fires on every workspace.focused event. Herdr has no timer event, so the hook
-stamps state, returns immediately, and hands off to a DETACHED child that sleeps
-for the dwell period and then promotes — provided focus never moved.
+Fires on workspace.focused and on tab.focused. Herdr has no timer event, so the
+hook stamps state, returns immediately, and hands off to a DETACHED child that
+sleeps for the dwell period and then promotes — provided focus never moved.
 
-A generation counter makes rapid switching safe: each focus event bumps it, and
-a waking child that finds a newer generation exits without touching anything.
-The parent never blocks, so the event hook cannot stall Herdr's UI.
+Two events are needed because neither sees every focus change on Herdr 0.9.0:
+workspace.focused fires only for API-driven focus, and tab.focused is what
+follows the user's own clicks and shortcuts. So the hook runs far more often
+than the focused workspace actually changes, and it exits untouched whenever
+the focused workspace is the one already in the state file. That keeps a
+running dwell clock alive across tab switches inside one workspace, and it also
+swallows the extra workspace.focused this plugin's own workspace.move raises.
+
+A generation counter makes rapid switching safe: each CHANGE of focused
+workspace bumps it, and a waking child that finds a newer generation exits
+without touching anything. The parent never blocks, so the event hook cannot
+stall Herdr's UI.
 
 The pinned workspace (default: home, label "~") is always held at index 0.
 
@@ -119,7 +128,15 @@ def on_focus():
     if not current or current == pin:
         return
 
-    gen = int(read_state().get("generation", 0)) + 1
+    # Same workspace as last time: leave the state, and the dwell clock the
+    # waiting child is counting down, exactly as they are. tab.focused fires on
+    # every tab switch, so re-stamping here would restart the clock forever and
+    # a workspace being actively worked in would never be promoted.
+    state = read_state()
+    if state.get("workspace_id") == current:
+        return
+
+    gen = int(state.get("generation", 0)) + 1
     write_state({"workspace_id": current, "since": time.time(), "generation": gen})
 
     # Detached: parent must not block Herdr's event pipeline for the dwell period.

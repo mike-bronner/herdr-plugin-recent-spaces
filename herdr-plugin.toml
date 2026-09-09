@@ -1,11 +1,22 @@
 id = "mikebronner.recent-spaces"
 name = "Recent Spaces"
-version = "0.3.0"
+version = "0.4.0"
 min_herdr_version = "0.8.0"
 description = "Keep the spaces sidebar in most-recently-used order"
 platforms = ["macos", "linux"]
 
 # Promote a workspace toward the top once it has been dwelled in.
+#
+# Two events, because neither one alone sees every focus change. On Herdr 0.9.0
+# workspace.focused fires only for API-driven focus (a workspace.focus RPC, or
+# this plugin's own workspace.move); focus changed in the UI never reaches the
+# hook. tab.focused does follow UI activity, so it carries the UI-driven case.
+# The hook ignores an event that does not change the focused workspace, so tab
+# switching inside one workspace costs nothing.
 [[events]]
 on = "workspace.focused"
+command = ["python3", "bin/promote-recent"]
+
+[[events]]
+on = "tab.focused"
 command = ["python3", "bin/promote-recent"]

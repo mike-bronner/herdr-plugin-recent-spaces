@@ -116,6 +116,64 @@ class AwaitDwell(unittest.TestCase):
         self.assertEqual(moves, [])
 
 
+class OnFocus(unittest.TestCase):
+    """The synchronous half: what it stamps, and when it stamps nothing.
+
+    The hook is subscribed to tab.focused as well as workspace.focused, so it
+    runs on every tab switch. Re-stamping on a workspace that is already the
+    recorded one would restart the dwell clock forever, and the workspace being
+    worked in would never be promoted.
+    """
+
+    def run_focus(self, state, rows):
+        calls, writes = [], []
+
+        def fake_call(method, params=None):
+            calls.append((method, params))
+            return {"result": {"workspaces": rows}}
+
+        with mock.patch.object(pr, "call", side_effect=fake_call), \
+             mock.patch.object(pr, "read_state", return_value=state), \
+             mock.patch.object(pr, "write_state", side_effect=writes.append), \
+             mock.patch.object(pr.subprocess, "Popen") as popen:
+            pr.on_focus()
+        return writes, popen, [c for c in calls if c[0] == "workspace.move"]
+
+    def test_a_new_focused_workspace_bumps_the_generation_and_arms_a_waiter(self):
+        rows = [ws("~", "w1"), ws("a", "w2"), ws("b", "w3", focused=True)]
+        writes, popen, _ = self.run_focus({"workspace_id": "w2", "generation": 4}, rows)
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0]["workspace_id"], "w3")
+        self.assertEqual(writes[0]["generation"], 5)
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args[0][0][-2:], ["--await", "5"])
+
+    def test_no_previous_state_arms_from_generation_one(self):
+        rows = [ws("~", "w1"), ws("b", "w3", focused=True)]
+        writes, popen, _ = self.run_focus({}, rows)
+        self.assertEqual(writes[0]["generation"], 1)
+        popen.assert_called_once()
+
+    def test_the_same_workspace_leaves_the_state_and_the_dwell_clock_alone(self):
+        rows = [ws("~", "w1"), ws("a", "w2"), ws("b", "w3", focused=True)]
+        writes, popen, _ = self.run_focus({"workspace_id": "w3", "generation": 4}, rows)
+        self.assertEqual(writes, [])
+        popen.assert_not_called()
+
+    def test_the_pin_is_still_held_when_the_workspace_did_not_change(self):
+        """The guard returns early, so the pin has to be held before it."""
+        rows = [ws("a", "w2"), ws("~", "w1"), ws("b", "w3", focused=True)]
+        _, _, moves = self.run_focus({"workspace_id": "w3", "generation": 4}, rows)
+        self.assertEqual(moves, [("workspace.move",
+                                  {"workspace_id": "w1", "insert_index": 0})])
+
+    def test_focus_on_the_pin_itself_stamps_nothing(self):
+        rows = [ws("~", "w1", focused=True), ws("a", "w2")]
+        writes, popen, _ = self.run_focus({"workspace_id": "w2", "generation": 4}, rows)
+        self.assertEqual(writes, [])
+        popen.assert_not_called()
+
+
 class EnvFile(unittest.TestCase):
     def config_dir(self, contents=None):
         tmp = tempfile.TemporaryDirectory()
@@ -216,16 +274,20 @@ class SocketPath(unittest.TestCase):
 
 
 class ManifestIsValidToml(unittest.TestCase):
-    """The manifest has to PARSE. Nothing else here opens it at all.
+    """The manifest has to PARSE, and it has to subscribe to both events.
 
     Measured on 0.8.2, 2026-09-08: Herdr re-reads herdr-plugin.toml from disk
     when it dispatches an event, rather than trusting the copy it cached in
     plugins.json. An edit takes effect on the very next event — no re-link, no
     restart, no reload-config. This is the other half of that: a syntax error
     in the manifest stops every dispatch for this plugin, with no toast, no
-    error and nothing surfaced. It simply goes quiet, and the manifest declares
-    exactly one event, workspace.focused, which is the whole of this plugin: it
-    is what reorders the sidebar.
+    error and nothing surfaced. It simply goes quiet, and the event
+    subscriptions in that file are the whole of this plugin: they are what
+    reorders the sidebar.
+
+    Two subscriptions are needed on Herdr 0.9.0. workspace.focused fires only
+    for API-driven focus changes, tab.focused is what follows the user's own
+    clicks, and dropping either one loses a set of focus changes silently.
 
     Skipped, loudly, where tomllib is unavailable: see the banner at the top of
     this file. A skip is not a pass.
@@ -245,6 +307,13 @@ class ManifestIsValidToml(unittest.TestCase):
             self.parse(MANIFEST)
         except tomllib.TOMLDecodeError as e:
             self.fail("herdr-plugin.toml is not valid TOML: %s" % e)
+
+    def test_the_manifest_subscribes_to_both_focus_events(self):
+        events = self.parse(MANIFEST)["events"]
+        self.assertEqual(sorted(e["on"] for e in events),
+                         ["tab.focused", "workspace.focused"])
+        for event in events:
+            self.assertEqual(event["command"], ["python3", "bin/promote-recent"])
 
     def test_a_typo_in_the_manifest_is_really_caught(self):
         """A canary on the test above, which would pass for two very different

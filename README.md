@@ -5,17 +5,32 @@ terminal multiplexer, in most-recently-used order.
 
 ## What it does
 
-`bin/promote-recent` is a `workspace.focused` hook. Once you have stayed in a
-workspace for a dwell period (`HERDR_RECENT_DWELL`, default 10 seconds) it is
-moved to the top of the sidebar, so the list reads newest to oldest. Quick
-flicks through workspaces do not reorder anything.
+`bin/promote-recent` runs on `workspace.focused` and on `tab.focused`. Once you
+have stayed in a workspace for a dwell period (`HERDR_RECENT_DWELL`, default 10
+seconds) it is moved to the top of the sidebar, so the list reads newest to
+oldest. Quick flicks through workspaces do not reorder anything.
+
+## Why two events
+
+Neither event on its own sees every focus change. On Herdr 0.9.0
+`workspace.focused` reaches plugins only for focus changed through the API — a
+`workspace.focus` RPC, or a `workspace.move` — because focus became client-local
+and the UI no longer raises the server-side event. Focus you change yourself, by
+clicking a space or using a shortcut, arrives as `tab.focused` instead.
+
+So the hook runs far more often than the focused workspace actually changes. It
+compares the focused workspace against the one in its state file, and where they
+match it leaves the state alone and exits. Switching tabs inside a workspace
+therefore does not restart that workspace's dwell clock, and the extra
+`workspace.focused` raised by the plugin's own `workspace.move` is ignored too.
 
 The home workspace (label `~`, `HERDR_RECENT_PIN` to override) is pinned at
 the very top and never moves.
 
-Herdr has no timer event, so the hook stamps a generation counter and hands
-off to a detached child that sleeps for the dwell and then promotes, provided
-focus never moved. The hook itself returns immediately and never stalls the UI.
+Herdr has no timer event, so a change of focused workspace stamps a generation
+counter and hands off to a detached child that sleeps for the dwell and then
+promotes, provided focus never moved. The hook itself returns immediately and
+never stalls the UI.
 
 ## Install
 
