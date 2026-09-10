@@ -9,22 +9,30 @@ use recent_spaces::retire;
 use recent_spaces::version;
 
 fn main() {
-    if asked_for_the_version() {
-        let env = Environment::from_process();
-        let manifest = version::read_manifest(version::root_of(&env).as_deref());
-        print!("{}", version::report(env!("CARGO_BIN_NAME"), &manifest));
-        return;
-    }
-    if catch_unwind_of(run).is_err() {
-        note("the watcher stopped on a fault it could not handle");
+    match version::requested(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        version::Request::Watch => {
+            if catch_unwind_of(run).is_err() {
+                note("the watcher stopped on a fault it could not handle");
+            }
+        }
+        version::Request::Report => report_the_build(),
+        version::Request::Refuse(argument) => refuse(&argument),
     }
 }
 
-fn asked_for_the_version() -> bool {
-    std::env::args_os()
-        .nth(1)
-        .map(|first| first == version::FLAG)
-        .unwrap_or(false)
+fn report_the_build() {
+    let env = Environment::from_process();
+    let manifest = version::read_manifest(version::root_of(&env).as_deref());
+    print!("{}", version::report(env!("CARGO_BIN_NAME"), &manifest));
+}
+
+fn refuse(argument: &str) -> ! {
+    note(&format!(
+        "unknown argument `{}`; run it with no arguments to watch, or `{}` to report the build",
+        argument,
+        version::FLAG
+    ));
+    std::process::exit(2);
 }
 
 fn catch_unwind_of(body: fn()) -> Result<(), ()> {
