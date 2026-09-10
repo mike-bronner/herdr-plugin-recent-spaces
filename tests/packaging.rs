@@ -85,7 +85,12 @@ fn the_manifest_declares_a_build_step_so_a_github_install_shows_one() {
     let parsed = manifest();
     let build = parsed["build"].as_array().unwrap();
     assert_eq!(build.len(), 1);
-    assert_eq!(argv(&build[0]), vec!["sh", "bin/build"]);
+    assert_eq!(
+        argv(&build[0]),
+        vec!["sh", "bin/build", "--prefer-download"],
+        "installing must not need a Rust toolchain, so the install step asks for \
+         the published binary first"
+    );
 }
 
 #[test]
@@ -194,6 +199,7 @@ fn every_rust_source_file_is_covered_by_that_guard() {
         "retire.rs",
         "version.rs",
         "mod.rs",
+        "prebuilt.rs",
         "promotion.rs",
         "retirement.rs",
         "settings.rs",
@@ -442,7 +448,7 @@ fn the_build_script_prefers_cargo_on_the_path_over_the_named_fallbacks() {
 
 #[test]
 fn the_build_script_searches_for_cargo_in_the_measured_order() {
-    let script = read_repo_file("bin/build");
+    let script = read_repo_file("bin/find-cargo");
     let order = [
         "${CARGO:-}",
         "${CARGO_HOME:-$HOME/.cargo}/bin/cargo",

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -326,6 +327,9 @@ pub fn fake_root(dir: &TempDir, real_build: bool) -> PathBuf {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("target/release")).unwrap();
     std::fs::copy(manifest_dir().join("bin/watch"), root.join("bin/watch")).unwrap();
+    for shared in ["bin/asset-name", "bin/find-cargo"] {
+        std::fs::copy(manifest_dir().join(shared), root.join(shared)).unwrap();
+    }
     if real_build {
         std::fs::copy(manifest_dir().join("bin/build"), root.join("bin/build")).unwrap();
     }
@@ -335,12 +339,35 @@ pub fn fake_root(dir: &TempDir, real_build: bool) -> PathBuf {
     root
 }
 
+pub fn declare(root: &Path, version: &str, repository: &str) {
+    std::fs::write(
+        root.join("herdr-plugin.toml"),
+        format!(
+            "id = \"probe.fake\"\nmin_herdr_version = \"0.9.0\"\nversion = \"{}\"\n",
+            version
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"fake\"\nversion = \"{}\"\nrepository = \"{}\"\n",
+            version, repository
+        ),
+    )
+    .unwrap();
+}
+
 pub fn executable(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, body).unwrap();
     let mut perms = std::fs::metadata(path).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(path, perms).unwrap();
+}
+
+pub fn mode_of(path: &Path) -> u32 {
+    std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(path).unwrap().permissions())
 }
 
 pub struct Shim {
@@ -377,6 +404,10 @@ pub fn run_build(root: &Path, extra: &[(&str, &str)]) -> Shim {
     run_script(root, "bin/build", &[], extra)
 }
 
+pub fn run_build_args(root: &Path, args: &[&str], extra: &[(&str, &str)]) -> Shim {
+    run_script(root, "bin/build", args, extra)
+}
+
 pub fn fake_cargo(dir: &TempDir, rel: &str, log: &Path) -> PathBuf {
     let path = dir.join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -395,4 +426,149 @@ pub fn current(root: &Path) {
         set_mtime(&root.join(named), 1000);
     }
     set_mtime(&root.join("target/release/watch"), 2000);
+}
+
+pub fn sha256_of(bytes: &[u8]) -> String {
+    let dir = TempDir::new();
+    let path = dir.join("body");
+    std::fs::write(&path, bytes).unwrap();
+    let out = Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(&path)
+        .output()
+        .expect("cannot run shasum");
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .expect("shasum printed nothing")
+        .to_string()
+}
+
+pub fn only_these_tools(dir: &TempDir, named: &str, tools: &[&str]) -> String {
+    let bin = dir.dir(named);
+    for tool in tools {
+        let mut found = None;
+        for prefix in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+            let candidate = PathBuf::from(prefix).join(tool);
+            if candidate.exists() {
+                found = Some(candidate);
+                break;
+            }
+        }
+        let from = found.unwrap_or_else(|| panic!("{} is not on the launchd PATH", tool));
+        let _ = std::os::unix::fs::symlink(&from, bin.join(tool));
+    }
+    bin.to_string_lossy().to_string()
+}
+
+type Published = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+pub struct Assets {
+    base: String,
+    port: u16,
+    files: Published,
+    asked: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Assets {
+    pub fn start() -> Assets {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("cannot bind the asset server");
+        let port = listener.local_addr().unwrap().port();
+        let files = Arc::new(Mutex::new(Vec::new()));
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let thread_files = Arc::clone(&files);
+        let thread_asked = Arc::clone(&asked);
+        let thread_stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if thread_stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut stream) = stream else { break };
+                serve_asset(&mut stream, &thread_files, &thread_asked);
+            }
+        });
+
+        Assets {
+            base: format!("http://127.0.0.1:{}/owner/repo", port),
+            port,
+            files,
+            asked,
+            stop,
+        }
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    pub fn publish(&self, path: &str, body: &[u8]) {
+        self.files
+            .lock()
+            .unwrap()
+            .push((path.to_string(), body.to_vec()));
+    }
+
+    pub fn asked(&self) -> Vec<String> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Assets {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
+    }
+}
+
+fn serve_asset(stream: &mut TcpStream, files: &Published, asked: &Arc<Mutex<Vec<String>>>) {
+    let Ok(peek) = stream.try_clone() else { return };
+    let mut reader = BufReader::new(peek);
+    let mut request = String::new();
+    if reader.read_line(&mut request).is_err() {
+        return;
+    }
+    loop {
+        let mut header = String::new();
+        match reader.read_line(&mut header) {
+            Ok(0) => break,
+            Ok(_) if header.trim().is_empty() => break,
+            Ok(_) => continue,
+            Err(_) => return,
+        }
+    }
+
+    let path = request
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    asked.lock().unwrap().push(path.clone());
+
+    let found = files
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(known, _)| *known == path)
+        .map(|(_, body)| body.clone());
+
+    let mut answer = match &found {
+        Some(body) => format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes(),
+        None => {
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
+                .to_vec()
+        }
+    };
+    if let Some(body) = found {
+        answer.extend_from_slice(&body);
+    }
+    let _ = stream.write_all(&answer);
+    let _ = stream.flush();
 }
