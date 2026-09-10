@@ -220,8 +220,65 @@ exec and therefore outside the binary. `bin/watch` compares the mtimes of `src`,
 `Cargo.toml` and `Cargo.lock` against the built binary, rebuilds when any is
 newer, and then execs it.
 
-The `[[build]]` entry is still declared, so that an install from GitHub shows a
-visible build step rather than stalling on first use.
+That mtime comparison is right for a binary compiled from the source beside it
+and wrong for a downloaded one, which belongs to a release instead. On every
+commit after a release the source is permanently newer, so the comparison would
+ask for a rebuild on every server start, for ever, on the one machine that has no
+toolchain to rebuild with. A downloaded binary therefore carries a note of the
+version it was fetched for, and the shim asks the version question for those
+rather than the mtime one.
+
+### It has network access
+
+Measured 2026-09-10 against Herdr 0.9.0, by installing a throwaway plugin from a
+branch of this repository whose only build step was a probe. **A `[[build]]`
+command can reach the network, and nothing sandboxes it.**
+
+```
+api.github.com/zen     http=200  dns=0.004s  connect=0.008s  total=0.125s
+release asset host     http=404  total=0.289s    (that asset does not exist)
+127.0.0.1 loopback     http=200  and a download that matched its sha256
+```
+
+The 404 is the useful line. A blocked network answers with a curl error rather
+than an HTTP status, so a status at all proves DNS, TLS and the redirect to
+`objects.githubusercontent.com` all completed. `curl -L` is needed: the
+unredirected request answers 302.
+
+This is the measurement the no-toolchain install rests on. `herdr plugin install
+owner/repo` reads no release metadata of any kind — it fetches a git ref and runs
+the build commands — so a published binary can be reached only by the build step
+fetching it itself.
+
+### It runs in a temporary checkout, which is then moved
+
+`PWD` during a build is
+`<config root>/herdr/plugins/.tmp-install-<pid>-<ms>/checkout`, and the finished
+tree is moved to `<config root>/herdr/plugins/github/<plugin-id>-<12 hex>`
+afterwards. Two things follow, both measured:
+
+- **Whatever the build writes survives the move, mode included.** A file written
+  0755 arrived 0755, and a plain file beside it arrived as well. So a build step
+  can leave both a binary and a note about where it came from.
+- **A reinstall replaces that same directory.** The `<12 hex>` suffix is keyed on
+  the source and not on the commit, so installing again discards whatever the
+  last build left and runs the build afresh.
+
+The installed copy keeps its `.git`: a **shallow** clone, detached `HEAD`, `https`
+remote.
+
+### It is handed no environment of its own
+
+A build command inherits the environment of the `herdr` CLI that invoked it, and
+**not one `HERDR_*` variable** — no `HERDR_PLUGIN_ROOT`, no
+`HERDR_PLUGIN_STATE_DIR`, no `HERDR_SOCKET_PATH`. That is the opposite of a
+`[[startup]]` command, which is handed the full set. A build step must therefore
+find its own checkout, which `bin/build` does from `$0`.
+
+It also means the `PATH` belongs to whoever ran the CLI rather than to launchd.
+Under the launchd `PATH` alone, `curl`, `shasum`, `sha256sum` and `openssl` are
+all reachable in `/usr/bin` and `/sbin`; `wget` is absent on macOS. There is no
+terminal: `[ -t 2 ]` answered no.
 
 ### Finding `cargo` from a plugin command
 

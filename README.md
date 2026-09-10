@@ -55,8 +55,9 @@ git clone git@github.com:mike-bronner/herdr-plugin-recent-spaces.git
 herdr plugin link /absolute/path/to/herdr-plugin-recent-spaces
 ```
 
-Needs Herdr 0.9.0 or newer, which is where `[[startup]]` arrived, and a Rust
-toolchain the first time it runs. See [requires](#requires).
+Needs Herdr 0.9.0 or newer, which is where `[[startup]]` arrived. **No Rust
+toolchain**: installing downloads the watcher built for your platform and checks
+it against its published checksum. See [requires](#requires).
 
 ### Installing is not enough on its own — restart the server
 
@@ -90,38 +91,107 @@ that directory. Note that `herdr plugin list` may still report the version the
 link was registered at, so treat the version it prints for a linked plugin as
 unreliable.
 
-Either way the watcher rebuilds itself on the next server start, and the running
-watcher from before the update retires itself when the new one claims the socket.
+Either way the watcher brings itself up to date on the next server start, and the
+running watcher from before the update retires itself when the new one claims the
+socket. A reinstall discards the old binary and fetches the one published for the
+version it just installed, so no toolchain is needed to update either.
 
-## How the binary is built
+## Where the binary comes from
 
-The watcher is a Rust binary. `bin/watch` is a small `sh` shim: it checks whether
-anything under `src/`, `Cargo.toml` or `Cargo.lock` is newer than the built
-binary, rebuilds if so, and then runs it. The manifest points Herdr at the shim
-and never at the build output, so nothing breaks when a profile or a path
-changes.
+The watcher is a Rust binary, and there are two ways to have one: download the
+one published for your platform, or compile the source. Installing prefers the
+download, so no toolchain is needed. A checkout you are working on compiles,
+because a release binary cannot contain the change you just made.
 
-The shim exists because Herdr's `[[build]]` steps run **only** during
-`herdr plugin install owner/repo`. They do not run for `herdr plugin link`, and
-they do not run on update. A linked checkout would therefore never build itself,
-and an update would keep running the old binary until you noticed. A stale binary
-cannot be relied on to notice that for you, because the code that would do the
-noticing is part of what changed, which is why the check sits in the shim and not
-in the watcher. `[[build]]` is declared as well, so that a GitHub install shows a
-visible build step rather than stalling silently on first use.
+### Installing downloads it
+
+Each release publishes a static binary per platform, with a `.sha256` beside it:
+
+| Platform | Asset |
+| --- | --- |
+| macOS, Apple Silicon | `watch-aarch64-apple-darwin` |
+| macOS, Intel | `watch-x86_64-apple-darwin` |
+| Linux, arm64 | `watch-aarch64-unknown-linux-musl` |
+| Linux, x86_64 | `watch-x86_64-unknown-linux-musl` |
+
+`herdr plugin install` reads no release metadata at all — it fetches a git ref and
+runs the build step — so `bin/build` composes the URL itself, from the repository
+in `Cargo.toml` and **the version in the `herdr-plugin.toml` it was just handed**.
+Keying on the declared version rather than on the commit or on "latest" is what
+makes the lookup stable: the version only moves on a release commit, so the
+manifest always names a tag that exists. Installing from `main` when `main` is
+ahead of the last release therefore gets the last release's binary, and the newer
+source sits inert until the next release. That is the intended answer, not a
+miss — nothing compiled that source, so nothing should claim to be running it.
+
+The download is verified before it is used, and that is not optional. The file is
+fetched to a temporary name, its sha256 is compared against the published one, and
+only a match moves it into place and makes it executable. A mismatch, a missing
+checksum, a checksum that is not a digest, or a machine with no `sha256sum` and no
+`shasum` each refuse the download. Verification is the gate on the move rather than
+a check alongside it, so there is no flag or variable that runs an unverified
+binary. The checksum is published by the same release as the binary, so it proves
+the artifact arrived whole over a verified transport; it is not a signature chain,
+and does not defend against a compromised release.
+
+Every refusal falls through to compiling, including an absent network and a
+platform with no published asset. Herdr aborts a plugin install whose build step
+fails, so a transient network problem must not cost somebody the plugin. Only a
+failure of both ways fails the install, and then the message names both of them.
+
+### A checkout you are working on compiles
+
+The shim is what keeps a checkout current, because Herdr's `[[build]]` steps run
+**only** during `herdr plugin install owner/repo`. They do not run for
+`herdr plugin link`, and they do not run on update. A linked checkout would
+otherwise never build itself, and an update would keep running the old binary
+until you noticed. A stale binary cannot be relied on to notice that for you,
+because the code that would do the noticing is part of what changed, which is why
+the check sits in the shim and not in the watcher.
+
+So when `bin/watch` finds the source newer than the binary it runs `bin/build`
+with no argument, and that order is reversed: compile first, download only if
+there is no toolchain at all. A rebuild was asked for because the source changed,
+and a release binary cannot answer that. **A compile that fails is never replaced
+by a download**, because that would run code you did not write and hide the error
+that stopped yours.
 
 Finding `cargo` by absolute path is not enough. Herdr's server runs under launchd
 with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, and `cargo` is a rustup shim that
 execs `rustc` out of its own directory — so a cold build dies with
 `could not execute process rustc -vV`. `bin/build` therefore prepends the cargo
-binary's own directory to the `PATH` it builds under. It looks on the `PATH`
-first, then at `$CARGO`, `$CARGO_HOME/bin/cargo`, `~/.cargo/bin/cargo`, and the
-usual Homebrew rustup and `/usr/local` locations.
+binary's own directory to the `PATH` it builds under. `bin/find-cargo` looks on
+the `PATH` first, then at `$CARGO`, `$CARGO_HOME/bin/cargo`,
+`~/.cargo/bin/cargo`, and the usual Homebrew rustup and `/usr/local` locations.
 
 When cargo is missing but a binary is already there, the shim runs that binary
 and says on stderr that it may be stale. When there is neither, it stops and says
 how to install a toolchain. A `[[startup]]` command has no terminal, so stderr
-and `herdr plugin log` are the only places either message can appear.
+and `herdr plugin log` are the only places any of these messages can appear.
+
+### How the shim tells the two apart
+
+A downloaded binary is recorded as one, in a small file beside it naming the
+version it was fetched for. The shim needs that because the two go stale for
+different reasons, and asking the wrong question breaks somebody.
+
+A compiled binary belongs to the source next to it, so mtimes answer: anything
+newer means the binary is behind. That is the development loop, unchanged.
+
+A downloaded binary belongs to a *release*. On every commit after one the source
+is permanently newer, so mtimes would ask for a rebuild on every server start for
+ever — on the one machine with no toolchain to rebuild with. The honest question
+there is which version it was downloaded for against the version the manifest
+declares now, and those differ only when a release has been cut, which is exactly
+when a new binary exists to fetch. A version that cannot be read fails closed and
+builds.
+
+One name covers both directions: `bin/asset-name` maps a platform to an asset
+name, and it is the only thing that does. The release workflow asks it to name the
+target it just built and `bin/build` asks it to name the host it is running on, so
+a name published and a name looked for cannot disagree. A platform it does not
+recognise gets no name and a non-zero exit rather than a guess, because a guessed
+name downloads a binary built for another platform.
 
 ## Which build is running
 
@@ -150,10 +220,17 @@ them apart. It carries the state of the tree it was built from: `-dirty` when
 that tree had uncommitted changes, and `-unverified` when the check itself could
 not run, because an unverifiable tree must not be reported as a clean one.
 
-That matters here because of one window. The shim rebuilds when the source is
-newer, but only `[[startup]]` ever invokes the shim, so nothing rebuilds between
-a `git pull` and the next server restart. The watcher running in that window is
-the old code, and the commit is the evidence.
+That matters here because of one window. The shim brings the binary up to date
+when the source is newer, but only `[[startup]]` ever invokes the shim, so nothing
+happens between a `git pull` and the next server restart. The watcher running in
+that window is the old code, and the commit is the evidence.
+
+What clears the `STALE:` line depends on where the binary came from, and a server
+restart clears it either way. A compiled one is rebuilt from the source beside it,
+which is what the line suggests. A downloaded one is replaced by the binary
+published for the version now declared, and `cargo build --release` is not how you
+get it — restart Herdr, or reinstall. The line names the one action that works
+with a toolchain, and does not know which kind of binary is reading it.
 
 So **asking for the version never builds**. The shim answers the flag before its
 staleness check, because a version command that rebuilt first would erase the
@@ -370,17 +447,21 @@ pkill -f bin/watch-focus
 
 ## Requires
 
-A Rust toolchain — `cargo` 1.75 or newer — the first time the plugin runs, and
-after every change to its source. Nothing else: the watcher talks to Herdr over
-the socket, so there is no runtime dependency to install.
+Herdr 0.9.0 or newer, and nothing else on the four platforms listed
+[above](#installing-downloads-it): installing downloads the watcher, and the
+watcher talks to Herdr over the socket, so there is no runtime dependency either.
+`curl` or `wget` to fetch it, and `sha256sum` or `shasum` to verify it — both
+pairs are already present on a stock macOS and on any ordinary Linux.
 
-Herdr's manifest has no dependency field, so the toolchain requirement is
-declared as a `[[build]]` step that runs `sh bin/build` at install time. With no
-toolchain at all it stops wherever it runs and says how to install one:
+A Rust toolchain — `cargo` 1.75 or newer — is needed in two cases: working on the
+plugin, and running it on a platform no binary is published for. When neither a
+download nor a compile can be had, the install stops and names both:
 
 ```
-recent-spaces: cargo not found; install a Rust toolchain (1.75 or newer), then
-run `cargo build --release` in /path/to/herdr-plugin-recent-spaces
+recent-spaces: no watcher binary, and both ways of getting one failed:
+recent-spaces:   1. nothing published at https://github.com/.../watch-...
+recent-spaces:   2. cargo not found, so it could not be compiled here
+recent-spaces: install a Rust toolchain with `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, then run `cargo build --release` in /path/to/herdr-plugin-recent-spaces
 ```
 
 ## Tests
@@ -396,8 +477,16 @@ rather than by waiting, so the whole suite takes well under a second.
 
 `herdr-plugin.toml` is parsed for real, because Herdr re-reads that file at
 dispatch time and a syntax error in it stops the plugin silently, with no toast
-and nothing surfaced. `bin/watch` and `bin/build` are run for real too, against
-fake plugin roots and a stubbed cargo, under the launchd `PATH`.
+and nothing surfaced. `bin/watch`, `bin/build` and `bin/asset-name` are run for
+real too, against fake plugin roots and a stubbed cargo, under the launchd `PATH`.
+
+The download path runs for real as well, against a stub release server on
+loopback: a fake plugin root names it as its repository, so the tests exercise the
+same URL composition, the same checksum comparison and the same refusals that a
+real install does. A machine with no toolchain is simulated by replacing
+`bin/find-cargo`, which is a file of its own for exactly that reason — a candidate
+list with four absolute paths in it cannot be made to fail on a machine that has
+cargo installed.
 
 The tree is rustfmt-formatted on the tool's defaults, with no `rustfmt.toml` to
 carry: `cargo fmt --check` is expected to pass. `cargo clippy --all-targets` is
