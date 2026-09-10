@@ -1,0 +1,41 @@
+name: CI
+
+# Runs the three gates local verification runs, on every push and every pull
+# request: the suite, the formatting, and clippy with warnings denied. A gate
+# weaker than what a developer runs by hand is not a gate.
+#
+# Every gate is its own step and nothing reads its output. A step fails the job
+# on a non-zero exit status, and that is the only thing judged here. Two defects
+# on this plugin reached a branch because a check read result lines instead of an
+# exit status, and a job doing the same would manufacture confidence rather than
+# earn it.
+#
+# macOS is not a preference. The suite writes its temporary directories under
+# /private/tmp, which exists on macOS and not on Linux, so a Linux runner cannot
+# run this suite at all. The label is the one the release workflow already
+# builds on.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gates:
+    name: Suite, formatting and clippy
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Run the suite
+        run: cargo test
+
+      - name: Check the formatting
+        run: cargo fmt --check
+
+      - name: Check clippy with warnings denied
+        run: cargo clippy --all-targets -- -D warnings

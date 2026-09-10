@@ -564,3 +564,110 @@ fn the_build_script_names_the_manifest_it_is_building() {
         ]
     );
 }
+
+const CI_WORKFLOW: &str = ".github/workflows/ci.yml";
+
+const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
+
+const GATES: [&str; 3] = [
+    "cargo test",
+    "cargo fmt --check",
+    "cargo clippy --all-targets -- -D warnings",
+];
+
+fn gate_commands(workflow: &str) -> Vec<String> {
+    read_repo_file(workflow)
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("run: "))
+        .map(str::trim)
+        .filter(|command| command.starts_with("cargo "))
+        .map(str::to_string)
+        .collect()
+}
+
+fn trigger_block(workflow: &str) -> Vec<String> {
+    read_repo_file(workflow)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .skip_while(|line| line != "on:")
+        .take_while(|line| line != "jobs:")
+        .collect()
+}
+
+#[test]
+fn ci_runs_the_suite_the_formatting_and_clippy_on_every_push_and_pull_request() {
+    let triggers = trigger_block(CI_WORKFLOW);
+    for event in ["push:", "pull_request:"] {
+        assert!(
+            triggers.contains(&event.to_string()),
+            "nothing has ever checked a commit on this plugin without {} here: {:?}",
+            event,
+            triggers
+        );
+    }
+    assert_eq!(
+        gate_commands(CI_WORKFLOW),
+        GATES.to_vec(),
+        "a gate weaker than what local verification runs is not a gate, and one gate \
+         per step is how a failure names itself"
+    );
+}
+
+#[test]
+fn a_release_cannot_publish_an_asset_from_a_tree_that_fails_the_gates() {
+    assert_eq!(
+        gate_commands(RELEASE_WORKFLOW),
+        GATES.to_vec(),
+        "a published asset cannot be recalled once somebody has it, so it runs the \
+         same gates CI runs"
+    );
+
+    let release = read_repo_file(RELEASE_WORKFLOW);
+    assert!(
+        release.contains("needs: gates"),
+        "the job that publishes must wait for the job that judges: {}",
+        release
+    );
+
+    let refs: Vec<&str> = release
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("ref: "))
+        .collect();
+    assert_eq!(
+        refs.len(),
+        2,
+        "the gate job and the publishing job each name the ref they read: {:?}",
+        refs
+    );
+    assert_eq!(
+        refs[0], refs[1],
+        "gating one tree and publishing another reports green over red, which is \
+         worse than no gate at all"
+    );
+}
+
+#[test]
+fn no_gate_is_judged_by_anything_but_its_exit_status() {
+    for workflow in [CI_WORKFLOW, RELEASE_WORKFLOW] {
+        let text = read_repo_file(workflow);
+        for escape in ["continue-on-error", "set +e", "always()"] {
+            assert!(
+                !text.contains(escape),
+                "{} carries `{}`, which lets a failed gate pass",
+                workflow,
+                escape
+            );
+        }
+        for command in gate_commands(workflow) {
+            for reader in ['|', '>', ';'] {
+                assert!(
+                    !command.contains(reader),
+                    "{} reads the output of `{}` instead of its exit status, which is \
+                     how two defects already reached this branch",
+                    workflow,
+                    command
+                );
+            }
+        }
+    }
+}

@@ -19,8 +19,38 @@ on:
         required: true
 
 jobs:
+  # Nothing is published until the tree being published passes the same three
+  # gates CI runs. A published asset is what users download, and it cannot be
+  # recalled once somebody has it.
+  #
+  # The checkout takes the same ref the binaries take. A gate that tested the
+  # default branch while the assets came from a tag would pass for a tree nobody
+  # is publishing, which is worse than no gate: it would report green over red.
+  gates:
+    name: Suite, formatting and clippy
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Run the suite
+        run: cargo test
+
+      - name: Check the formatting
+        run: cargo fmt --check
+
+      - name: Check clippy with warnings denied
+        run: cargo clippy --all-targets -- -D warnings
+
   binaries:
     name: ${{ matrix.target }}
+    needs: gates
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
