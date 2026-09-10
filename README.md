@@ -165,10 +165,77 @@ commit was made. A build from a tree with no `git` available reads `unknown` in
 place of the commit rather than failing, because Herdr aborts an install whose
 build step fails and installs no toolchains.
 
-Nothing on this path can fail. A manifest that is missing, unreadable or
-unparseable is named as such on the second line, and the binary still exits 0. It
-also finds its own checkout when `HERDR_PLUGIN_ROOT` is unset, so running the
-binary directly from a shell answers the same as running it through the shim.
+Nothing on this path can fail. A manifest that is missing, unreadable, unparseable
+or simply without a `version` key is named as such on the second line, and the
+binary still exits 0. Those four cases stay distinct on purpose: a manifest that
+parsed perfectly and only lacks the key reads `manifest has no version key at
+<path>`, because reporting it as a syntax error sends you looking for a fault that
+is not there. It also finds its own checkout when `HERDR_PLUGIN_ROOT` is unset, so
+running the binary directly from a shell answers the same as running it through
+the shim.
+
+### What the watcher accepts on the command line
+
+No arguments, or `--version` on its own. Nothing else.
+
+Herdr dispatches the `[[startup]]` command with no arguments, so the
+no-argument case is the watcher and always will be. Every other argument is
+refused on stderr with exit 2:
+
+```
+recent-spaces: unknown argument `--help`; run it with no arguments to watch, or `--version` to report the build
+```
+
+It is drawn that tightly because the alternative was measured and it is nasty.
+Anything that was not exactly the flag used to fall through into the poll loop, so
+`--help`, a misspelt flag, or a stray argument started a long-lived watcher that
+held the terminal and took one of Herdr's 32 plugin slots. The cost landed on
+whoever was debugging, which is the worst audience for it. There is deliberately
+no `--help`: this is a startup command with two invocations, and the refusal names
+both of them.
+
+### What `-dirty` means, and why it is drawn that narrowly
+
+**It means the binary was compiled from files that are not committed. It does not
+mean `git status` had something to say.** The hash claims this binary came from
+that commit, and only the files that go into the compilation can falsify that
+claim. An edited `README.md` or an edited `herdr-plugin.toml` cannot, so neither
+one moves the marker. A field whose only job is to carry signal must not carry
+noise, because it is read exactly when something is already confusing.
+
+One list in `build.rs` names those files — `src`, `build.rs`, `Cargo.toml` and
+`Cargo.lock` — and that same list is both the `cargo:rerun-if-changed` set and
+the pathspec the status check runs under. They cannot drift apart, which is the
+point: when the two halves disagreed, the marker could report the wrong state in
+both directions. Editing a file outside the list rebuilt nothing, so the marker
+kept claiming clean against a dirty tree; building while one was edited and then
+reverting it left the marker claiming dirty forever.
+
+A stale manifest version is a separate question, and the `STALE:` line already
+answers it from the manifest on disk at the moment you ask.
+
+Three things here were measured rather than reasoned about, because each one looks
+like a hole and is not:
+
+- **`cargo:rerun-if-changed` compares mtimes, not contents.** A whitespace-only
+  edit to `Cargo.toml`, or a bare `touch`, reruns the build script and re-stamps
+  the binary. Cargo's other path — fingerprinting the *parsed* manifest, where a
+  whitespace edit resolves to the same manifest and reruns nothing — applies only
+  when `Cargo.toml` is absent from the rerun set. It is in ours, so it reruns.
+- **Staging cannot move the marker, so `.git/index` is not watched.** `git add`
+  moves an entry from one porcelain column to the other and the output stays
+  non-empty either way. Watching the index bought a rebuild on every `git add`
+  and could not change a single answer.
+- **A watched path that does not exist reruns the build script on every build.**
+  This checkout has no `.git/packed-refs`, so watching it unconditionally meant an
+  idle rebuild was never idle. The git paths are therefore filtered to the ones
+  that are there, and `.git/refs` is watched as a directory so that a commit made
+  while the ref was packed still moves the hash.
+
+One case is left alone deliberately: `git rm --cached` on a source file stages a
+deletion without touching the working tree, so nothing reruns and the marker holds
+its previous answer until the next rebuild. A rebuild on every `git add` is a poor
+price for closing that.
 
 ## How it talks to Herdr
 
