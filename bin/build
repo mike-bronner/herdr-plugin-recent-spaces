@@ -1,36 +1,208 @@
 #!/bin/sh
+# Gets a watcher binary, two ways: download a published one, or compile it.
+#
+# Which way is tried first depends on who is asking, and the two callers want
+# opposite things.
+#
+#   --prefer-download   the [[build]] step of `herdr plugin install`. Nobody
+#                       has asked for this checkout to be compiled; they asked
+#                       for a working plugin. A published binary is faster and
+#                       needs no toolchain, so it is tried first.
+#
+#   no argument         bin/watch, because the source changed. A download
+#                       cannot satisfy that request: the published binary is
+#                       the last release, not the source in front of it. So
+#                       compiling is tried first, and a download is the
+#                       fallback only when there is no toolchain at all.
+#
+# The asymmetry is the point. A failed compile is never quietly replaced by a
+# release binary, because that would run code the developer did not write and
+# hide the error that stopped theirs.
 set -eu
 
 PLUGIN_ROOT="${HERDR_PLUGIN_ROOT:-$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}"
+BIN="$PLUGIN_ROOT/target/release/watch"
+MARK="$BIN.download"
+PART="$BIN.part"
+PART_SUM="$BIN.part.sha256"
+
+RUSTUP="curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+
+DOWNLOAD_REASON="no published binary was tried"
+COMPILE_REASON="cargo not found, so it could not be compiled here"
 
 note() { printf 'recent-spaces: %s\n' "$*" >&2; }
 die() { note "$*"; exit 1; }
 
 find_cargo() {
-    if command -v cargo >/dev/null 2>&1; then
-        command -v cargo
-        return 0
-    fi
-    for candidate in \
-        "${CARGO:-}" \
-        "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" \
-        "$HOME/.cargo/bin/cargo" \
-        /opt/homebrew/opt/rustup/bin/cargo \
-        /opt/homebrew/bin/cargo \
-        /usr/local/opt/rustup/bin/cargo \
-        /usr/local/bin/cargo
-    do
-        [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+    sh "$PLUGIN_ROOT/bin/find-cargo"
+}
+
+first_of() {
+    for candidate in "$@"; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
     done
     return 1
 }
 
-CARGO_BIN="$(find_cargo || true)"
-[ -n "$CARGO_BIN" ] || die "cargo not found; install a Rust toolchain (1.75 or newer), then run \`cargo build --release\` in $PLUGIN_ROOT"
+# Anchored at the start of the line on purpose: herdr-plugin.toml also carries
+# min_herdr_version, and an unanchored match would read the Herdr floor as the
+# plugin version and look for a release that was never cut.
+declared_version() {
+    sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$PLUGIN_ROOT/herdr-plugin.toml" 2>/dev/null | head -1
+}
 
-CARGO_DIR="$(dirname -- "$CARGO_BIN")"
+repository_url() {
+    sed -n 's/^repository[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$PLUGIN_ROOT/Cargo.toml" 2>/dev/null | head -1 | sed 's#/*$##'
+}
 
-note "building the watcher with $CARGO_BIN"
-PATH="$CARGO_DIR:$PATH" "$CARGO_BIN" \
-    build --release --manifest-path "$PLUGIN_ROOT/Cargo.toml" >&2 \
-    || die "cargo build --release failed in $PLUGIN_ROOT"
+discard_parts() { rm -f "$PART" "$PART_SUM"; }
+
+fetch() {
+    case "$DOWNLOADER_KIND" in
+        curl) "$DOWNLOADER" -fsSL --retry 2 --max-time 60 -o "$2" -- "$1" ;;
+        wget) "$DOWNLOADER" --quiet --tries=2 --timeout=60 -O "$2" -- "$1" ;;
+        *) return 1 ;;
+    esac
+}
+
+digest_of() {
+    case "$CHECKSUMMER_KIND" in
+        sha256sum) "$CHECKSUMMER" "$1" ;;
+        *) "$CHECKSUMMER" -a 256 "$1" ;;
+    esac | awk '{ print $1 }' | tr 'ABCDEF' 'abcdef'
+}
+
+# Downloads the published binary for this platform and this version, and moves
+# it into place only once its published checksum has matched. The move is the
+# gate: an unverified file never occupies the path the shim execs, so there is
+# no flag, variable or failure mode that runs one. Every refusal returns 1 so
+# the caller can compile instead.
+download_binary() {
+    version="$(declared_version)"
+    if [ -z "$version" ]; then
+        DOWNLOAD_REASON="the manifest declares no version, so no release could be named"
+        return 1
+    fi
+
+    repository="$(repository_url)"
+    if [ -z "$repository" ]; then
+        DOWNLOAD_REASON="Cargo.toml names no repository, so no release could be found"
+        return 1
+    fi
+
+    asset="$(sh "$PLUGIN_ROOT/bin/asset-name" || true)"
+    if [ -z "$asset" ]; then
+        DOWNLOAD_REASON="no binary is published for $(uname -s) $(uname -m)"
+        return 1
+    fi
+
+    DOWNLOADER="$(first_of curl wget || true)"
+    if [ -z "$DOWNLOADER" ]; then
+        DOWNLOAD_REASON="neither curl nor wget is here, so $asset could not be downloaded"
+        return 1
+    fi
+    DOWNLOADER_KIND="$(basename -- "$DOWNLOADER")"
+
+    CHECKSUMMER="$(first_of sha256sum shasum || true)"
+    if [ -z "$CHECKSUMMER" ]; then
+        DOWNLOAD_REASON="neither sha256sum nor shasum is here, so a download could not be verified"
+        return 1
+    fi
+    CHECKSUMMER_KIND="$(basename -- "$CHECKSUMMER")"
+
+    url="$repository/releases/download/v$version/$asset"
+    mkdir -p "$(dirname -- "$BIN")"
+    discard_parts
+
+    note "looking for a published $asset for v$version"
+
+    if ! fetch "$url" "$PART"; then
+        DOWNLOAD_REASON="nothing published at $url"
+        discard_parts
+        return 1
+    fi
+
+    if ! fetch "$url.sha256" "$PART_SUM"; then
+        DOWNLOAD_REASON="no checksum published beside $url, so $asset could not be verified"
+        discard_parts
+        return 1
+    fi
+
+    expected="$(awk '{ print $1; exit }' "$PART_SUM" | tr 'ABCDEF' 'abcdef')"
+    if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+        DOWNLOAD_REASON="the checksum published beside $asset is not a sha256 digest"
+        discard_parts
+        return 1
+    fi
+
+    actual="$(digest_of "$PART")"
+    if [ "$actual" != "$expected" ]; then
+        DOWNLOAD_REASON="$asset does not match its published checksum: expected $expected, got $actual"
+        discard_parts
+        return 1
+    fi
+
+    chmod 0755 "$PART"
+    mv -f "$PART" "$BIN"
+    printf 'version=%s\nasset=%s\nsha256=%s\nurl=%s\n' \
+        "$version" "$asset" "$actual" "$url" > "$MARK"
+    discard_parts
+    note "using the published $asset for v$version, checksum verified"
+}
+
+# 0 built it, 1 no toolchain to try, 2 tried and failed. The caller must keep
+# those last two apart: no toolchain is something a download can answer, and a
+# failed build is not.
+compile() {
+    cargo_bin="$(find_cargo || true)"
+    if [ -z "$cargo_bin" ]; then
+        COMPILE_REASON="cargo not found, so it could not be compiled here"
+        return 1
+    fi
+    cargo_dir="$(dirname -- "$cargo_bin")"
+    note "building the watcher with $cargo_bin"
+    if PATH="$cargo_dir:$PATH" "$cargo_bin" \
+        build --release --manifest-path "$PLUGIN_ROOT/Cargo.toml" >&2
+    then
+        rm -f "$MARK"
+        return 0
+    fi
+    COMPILE_REASON="cargo build --release failed in $PLUGIN_ROOT"
+    return 2
+}
+
+both_failed() {
+    note "no watcher binary, and both ways of getting one failed:"
+    note "  1. $DOWNLOAD_REASON"
+    note "  2. $COMPILE_REASON"
+    die "install a Rust toolchain with \`$RUSTUP\`, then run \`cargo build --release\` in $PLUGIN_ROOT"
+}
+
+case "${1:-}" in
+    --prefer-download)
+        download_binary && exit 0
+        note "$DOWNLOAD_REASON, so compiling it here instead"
+        compile && exit 0
+        both_failed
+        ;;
+    '')
+        if compile; then
+            exit 0
+        else
+            compiled=$?
+        fi
+        [ "$compiled" -eq 2 ] && die "$COMPILE_REASON"
+        note "$COMPILE_REASON, so looking for a published binary instead"
+        download_binary && exit 0
+        both_failed
+        ;;
+    *)
+        die "unknown argument \`$1\`; run it with no arguments to build, or with --prefer-download to prefer a published binary"
+        ;;
+esac

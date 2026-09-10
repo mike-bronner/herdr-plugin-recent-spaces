@@ -5,16 +5,21 @@ min_herdr_version = "0.9.0"
 description = "Keep the spaces sidebar in most-recently-used order"
 platforms = ["macos", "linux"]
 
-# The watcher is a Rust binary, and this step compiles it.
+# The watcher is a Rust binary, and this step gets one.
+#
+# `--prefer-download` asks for the binary published for this platform by the
+# release this manifest declares, falling back to compiling only when no
+# verified binary can be had. Installing therefore needs no Rust toolchain.
+# Every fallback is deliberate: Herdr aborts an install whose build step fails,
+# so a transient network problem must not cost somebody the plugin.
 #
 # It runs during `herdr plugin install owner/repo` and at no other time:
 # measured as not running on plugin link, on plugin enable, or on a server
 # restart. A linked checkout and an updated one therefore build nothing here,
-# which is why bin/watch rebuilds before it execs the binary. This entry is
-# declared so that a GitHub install shows a visible build step rather than
-# stalling on first use. See docs/herdr-behaviour.md.
+# which is why bin/watch builds before it execs the binary. See
+# docs/herdr-behaviour.md.
 [[build]]
-command = ["sh", "bin/build"]
+command = ["sh", "bin/build", "--prefer-download"]
 
 # One long-lived watcher, started once when the Herdr server starts.
 #
