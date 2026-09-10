@@ -3,6 +3,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -317,4 +318,81 @@ pub fn manifest_dir() -> PathBuf {
 pub fn read_repo_file(name: &str) -> String {
     std::fs::read_to_string(manifest_dir().join(name))
         .unwrap_or_else(|_| panic!("cannot read {}", name))
+}
+
+pub fn fake_root(dir: &TempDir, real_build: bool) -> PathBuf {
+    let root = dir.dir("plugin");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("target/release")).unwrap();
+    std::fs::copy(manifest_dir().join("bin/watch"), root.join("bin/watch")).unwrap();
+    if real_build {
+        std::fs::copy(manifest_dir().join("bin/build"), root.join("bin/build")).unwrap();
+    }
+    std::fs::write(root.join("Cargo.toml"), "").unwrap();
+    std::fs::write(root.join("Cargo.lock"), "").unwrap();
+    std::fs::write(root.join("src/main.rs"), "").unwrap();
+    root
+}
+
+pub fn executable(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, body).unwrap();
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms).unwrap();
+}
+
+pub struct Shim {
+    pub status: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub fn run_script(root: &Path, script: &str, args: &[&str], extra: &[(&str, &str)]) -> Shim {
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg(root.join(script))
+        .args(args)
+        .env_clear()
+        .env("PATH", LAUNCHD_PATH)
+        .env("HOME", "/private/tmp")
+        .env("HERDR_PLUGIN_ROOT", root);
+    for (key, value) in extra {
+        command.env(key, value);
+    }
+    let out = command.output().expect("cannot run the script");
+    Shim {
+        status: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+    }
+}
+
+pub fn run_shim(root: &Path, extra: &[(&str, &str)]) -> Shim {
+    run_script(root, "bin/watch", &[], extra)
+}
+
+pub fn run_build(root: &Path, extra: &[(&str, &str)]) -> Shim {
+    run_script(root, "bin/build", &[], extra)
+}
+
+pub fn fake_cargo(dir: &TempDir, rel: &str, log: &Path) -> PathBuf {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    executable(
+        &path,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n%s\\n' \"$0\" \"$PATH\" > '{}'\n",
+            log.to_string_lossy()
+        ),
+    );
+    path
+}
+
+pub fn current(root: &Path) {
+    for named in ["src/main.rs", "src", "Cargo.toml", "Cargo.lock"] {
+        set_mtime(&root.join(named), 1000);
+    }
+    set_mtime(&root.join("target/release/watch"), 2000);
 }
