@@ -478,14 +478,25 @@ fn a_manifest_that_disagrees_with_the_binary_is_diagnosed_at_run_time() {
     );
 }
 
-#[test]
-fn the_commit_follows_the_tree_it_was_built_from() {
-    let dir = TempDir::new();
-    let root = crate_copy(&dir);
-    let target = dir.join("target");
+fn edit_a_compiled_file(root: &Path) {
+    let mut source = read_repo_file("src/version.rs");
+    source.push('\n');
+    std::fs::write(root.join("src/version.rs"), source).unwrap();
+}
+
+fn committed_copy(dir: &TempDir) -> PathBuf {
+    let root = crate_copy(dir);
     git_in(&root, &["init", "--quiet"]);
     git_in(&root, &["add", "."]);
     git_in(&root, &["commit", "--quiet", "-m", "first"]);
+    root
+}
+
+#[test]
+fn the_commit_follows_the_tree_it_was_built_from() {
+    let dir = TempDir::new();
+    let root = committed_copy(&dir);
+    let target = dir.join("target");
 
     let clean = in_parentheses(&header_of(&build_and_ask(&root, &target)));
     let head = git_out(&root, &["rev-parse", "--short", "HEAD"]).unwrap();
@@ -493,24 +504,25 @@ fn the_commit_follows_the_tree_it_was_built_from() {
     assert!(!clean.contains("-dirty"), "{}", clean);
     assert!(!clean.contains("-unverified"), "{}", clean);
 
-    std::fs::write(
-        root.join("herdr-plugin.toml"),
-        "version = \"0.5.0\"\nid = \"x\"\n",
-    )
-    .unwrap();
-    git_in(&root, &["add", "herdr-plugin.toml"]);
+    edit_a_compiled_file(&root);
     let dirty = in_parentheses(&header_of(&build_and_ask(&root, &target)));
     assert!(
         dirty.starts_with(&format!("{}-dirty", head)),
-        "a staged change is uncommitted, so the hash alone would misreport it: {}",
+        "the binary was compiled from an uncommitted source file, so the hash alone would misreport it: {}",
         dirty
     );
 
+    git_in(&root, &["add", "src/version.rs"]);
     git_in(&root, &["commit", "--quiet", "-m", "second"]);
     let moved = in_parentheses(&header_of(&build_and_ask(&root, &target)));
     let second = git_out(&root, &["rev-parse", "--short", "HEAD"]).unwrap();
     assert!(moved.starts_with(&second), "{}", moved);
     assert_ne!(head, second);
+    assert!(
+        !moved.contains("-dirty"),
+        "committing the edit cleaned the tree, so the marker must not stay dirty: {}",
+        moved
+    );
 
     git_in(
         &root,
@@ -522,5 +534,104 @@ fn the_commit_follows_the_tree_it_was_built_from() {
         empty.starts_with(&third),
         "a commit that edits no file left the binary reporting the one before it: {}",
         empty
+    );
+}
+
+#[test]
+fn a_file_the_binary_is_not_compiled_from_cannot_make_the_marker_dirty() {
+    let dir = TempDir::new();
+    let root = committed_copy(&dir);
+    let target = dir.join("target");
+    let head = git_out(&root, &["rev-parse", "--short", "HEAD"]).unwrap();
+
+    let clean = in_parentheses(&header_of(&build_and_ask(&root, &target)));
+    assert!(clean.starts_with(&head), "{}", clean);
+    assert!(!clean.contains("-dirty"), "{}", clean);
+
+    std::fs::write(root.join("herdr-plugin.toml"), "version = \"0.5.0\"\n").unwrap();
+    edit_a_compiled_file(&root);
+    git_in(&root, &["add", "src/version.rs"]);
+    git_in(&root, &["commit", "--quiet", "-m", "second"]);
+
+    let second = git_out(&root, &["rev-parse", "--short", "HEAD"]).unwrap();
+    assert_ne!(head, second);
+    assert!(
+        !git_out(&root, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty(),
+        "this test is worthless unless the whole tree reads dirty here"
+    );
+
+    let after = in_parentheses(&header_of(&build_and_ask(&root, &target)));
+    assert!(after.starts_with(&second), "{}", after);
+    assert!(
+        !after.contains("-dirty"),
+        "an uncommitted file that is compiled into nothing cannot falsify the hash: {}",
+        after
+    );
+}
+
+#[test]
+fn a_second_build_in_a_git_checkout_with_nothing_changed_rebuilds_nothing() {
+    let dir = TempDir::new();
+    let root = committed_copy(&dir);
+    let target = dir.join("target");
+    assert!(
+        !root.join(".git/packed-refs").exists(),
+        "this checkout packs no refs, which is the case a watched path that is not there would rebuild on forever"
+    );
+
+    let first = build_and_ask(&root, &target);
+    past_the_next_second();
+    let again = build_and_ask(&root, &target);
+    assert_eq!(
+        first, again,
+        "a second build with nothing changed rebuilt anyway, so the stamp moved"
+    );
+}
+
+#[test]
+fn a_commit_still_moves_the_hash_after_the_refs_have_been_packed() {
+    let dir = TempDir::new();
+    let root = committed_copy(&dir);
+    let target = dir.join("target");
+    git_in(&root, &["pack-refs", "--all"]);
+    assert!(root.join(".git/packed-refs").exists());
+
+    let head = git_out(&root, &["rev-parse", "--short", "HEAD"]).unwrap();
+    let packed = in_parentheses(&header_of(&build_and_ask(&root, &target)));
+    assert!(packed.starts_with(&head), "{}", packed);
+
+    git_in(
+        &root,
+        &["commit", "--quiet", "--allow-empty", "-m", "unpacked"],
+    );
+    let after = in_parentheses(&header_of(&build_and_ask(&root, &target)));
+    let second = git_out(&root, &["rev-parse", "--short", "HEAD"]).unwrap();
+    assert_ne!(head, second);
+    assert!(
+        after.starts_with(&second),
+        "the commit wrote a loose ref where there was none, and the binary kept reporting the one before it: {}",
+        after
+    );
+}
+
+#[test]
+fn staging_a_change_costs_no_rebuild_and_cannot_move_the_marker() {
+    let dir = TempDir::new();
+    let root = committed_copy(&dir);
+    let target = dir.join("target");
+
+    edit_a_compiled_file(&root);
+    let unstaged = header_of(&build_and_ask(&root, &target));
+    assert!(in_parentheses(&unstaged).contains("-dirty"), "{}", unstaged);
+
+    past_the_next_second();
+    git_in(&root, &["add", "src/version.rs"]);
+    let staged = header_of(&build_and_ask(&root, &target));
+
+    assert_eq!(
+        unstaged, staged,
+        "`git add` moves a porcelain column and changes no compiled file, so watching .git/index only bought a rebuild"
     );
 }
