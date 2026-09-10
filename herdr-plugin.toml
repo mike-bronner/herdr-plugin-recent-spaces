@@ -5,16 +5,32 @@ min_herdr_version = "0.9.0"
 description = "Keep the spaces sidebar in most-recently-used order"
 platforms = ["macos", "linux"]
 
+# The watcher is a Rust binary, and this step compiles it.
+#
+# It runs during `herdr plugin install owner/repo` and at no other time:
+# measured as not running on plugin link, on plugin enable, or on a server
+# restart. A linked checkout and an updated one therefore build nothing here,
+# which is why bin/watch rebuilds before it execs the binary. This entry is
+# declared so that a GitHub install shows a visible build step rather than
+# stalling on first use. See docs/herdr-behaviour.md.
+[[build]]
+command = ["sh", "bin/build"]
+
 # One long-lived watcher, started once when the Herdr server starts.
+#
+# The command is the shim, never the build artifact: bin/watch rebuilds the
+# binary when the source is newer and then execs it, so a `git pull` cannot
+# leave the old binary running. A path under target/ would also break the
+# moment the profile changed.
 #
 # There is deliberately no [[events]] hook. On Herdr 0.9.0 a focus change
 # reaches a plugin only when the change came through Herdr's API, so focus you
 # change in the UI — the case this plugin exists for — dispatches nothing,
-# whichever event kind is subscribed. bin/watch-focus polls workspace.list
-# instead, which does report UI-driven focus. See docs/herdr-behaviour.md.
+# whichever event kind is subscribed. The watcher polls workspace.list instead,
+# which does report UI-driven focus. See docs/herdr-behaviour.md.
 #
 # A [[startup]] command takes effect only when the server restarts. That is
 # unlike an [[events]] change, which Herdr picks up on the very next event
 # because it re-reads this file at dispatch time.
 [[startup]]
-command = ["/usr/bin/python3", "bin/watch-focus"]
+command = ["sh", "bin/watch"]
