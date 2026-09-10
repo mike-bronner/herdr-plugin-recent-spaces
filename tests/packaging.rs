@@ -1,7 +1,6 @@
 mod support;
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use support::*;
 
@@ -226,70 +225,6 @@ fn two_temporary_directories_never_share_a_path() {
     );
 }
 
-fn fake_root(dir: &TempDir, real_build: bool) -> PathBuf {
-    let root = dir.dir("plugin");
-    std::fs::create_dir_all(root.join("bin")).unwrap();
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::create_dir_all(root.join("target/release")).unwrap();
-    std::fs::copy(manifest_dir().join("bin/watch"), root.join("bin/watch")).unwrap();
-    if real_build {
-        std::fs::copy(manifest_dir().join("bin/build"), root.join("bin/build")).unwrap();
-    }
-    std::fs::write(root.join("Cargo.toml"), "").unwrap();
-    std::fs::write(root.join("Cargo.lock"), "").unwrap();
-    std::fs::write(root.join("src/main.rs"), "").unwrap();
-    root
-}
-
-fn executable(path: &Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, body).unwrap();
-    let mut perms = std::fs::metadata(path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms).unwrap();
-}
-
-struct Shim {
-    status: i32,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_script(root: &Path, script: &str, args: &[&str], extra: &[(&str, &str)]) -> Shim {
-    let mut command = Command::new("/bin/sh");
-    command
-        .arg(root.join(script))
-        .args(args)
-        .env_clear()
-        .env("PATH", LAUNCHD_PATH)
-        .env("HOME", "/private/tmp")
-        .env("HERDR_PLUGIN_ROOT", root);
-    for (key, value) in extra {
-        command.env(key, value);
-    }
-    let out = command.output().expect("cannot run the script");
-    Shim {
-        status: out.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-    }
-}
-
-fn run_shim(root: &Path, extra: &[(&str, &str)]) -> Shim {
-    run_script(root, "bin/watch", &[], extra)
-}
-
-fn run_build(root: &Path, extra: &[(&str, &str)]) -> Shim {
-    run_script(root, "bin/build", &[], extra)
-}
-
-fn current(root: &Path) {
-    for named in ["src/main.rs", "src", "Cargo.toml", "Cargo.lock"] {
-        set_mtime(&root.join(named), 1000);
-    }
-    set_mtime(&root.join("target/release/watch"), 2000);
-}
-
 #[test]
 fn the_shim_runs_the_binary_and_builds_nothing_when_it_is_current() {
     let dir = TempDir::new();
@@ -439,19 +374,6 @@ fn the_shim_hands_its_arguments_to_the_binary() {
 
     let run = run_script(&root, "bin/watch", &["--one", "two words"], &[]);
     assert_eq!(run.stdout, "--one\ntwo words\n");
-}
-
-fn fake_cargo(dir: &TempDir, rel: &str, log: &Path) -> PathBuf {
-    let path = dir.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    executable(
-        &path,
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n%s\\n' \"$0\" \"$PATH\" > '{}'\n",
-            log.to_string_lossy()
-        ),
-    );
-    path
 }
 
 #[test]
