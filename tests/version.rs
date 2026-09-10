@@ -194,6 +194,22 @@ fn a_manifest_it_cannot_read_is_named_rather_than_guessed_at() {
 }
 
 #[test]
+fn a_manifest_with_no_version_key_is_told_apart_from_one_that_will_not_parse() {
+    let dir = TempDir::new();
+    let report = version::report("watch", &Manifest::NoVersion(dir.join("herdr-plugin.toml")));
+    assert_eq!(
+        manifest_of(&report),
+        format!(
+            "manifest has no version key at {}",
+            dir.join("herdr-plugin.toml").display()
+        )
+    );
+    assert_eq!(report.lines().count(), 2, "{}", report);
+    assert!(!report.contains("unparsed"), "{}", report);
+    assert!(!report.contains("STALE"), "{}", report);
+}
+
+#[test]
 fn with_no_plugin_root_the_manifest_line_says_how_to_point_at_one() {
     let report = version::report("watch", &Manifest::NoRoot);
     assert_eq!(
@@ -238,8 +254,8 @@ fn reading_a_manifest_tells_the_failures_apart() {
     dir.write("herdr-plugin.toml", "id = \"x\"\n");
     assert_eq!(
         version::read_manifest(Some(dir.path())),
-        Manifest::Unparsed(dir.join("herdr-plugin.toml")),
-        "a manifest with no version cannot be compared against the binary"
+        Manifest::NoVersion(dir.join("herdr-plugin.toml")),
+        "this manifest parsed, so calling it unparsed names a fault that is not there"
     );
 
     dir.write("herdr-plugin.toml", "version = \"1.2.3\"\n");
@@ -466,6 +482,18 @@ fn a_manifest_that_disagrees_with_the_binary_is_diagnosed_at_run_time() {
         manifest_of(&broken.stdout).starts_with("manifest unparsed at "),
         "{}",
         broken.stdout
+    );
+
+    std::fs::write(root.join("herdr-plugin.toml"), "id = \"x\"\n").unwrap();
+    let keyless = ask(&binary, &[("HERDR_PLUGIN_ROOT", root.to_str().unwrap())]);
+    assert_eq!(keyless.status, 0, "{}", keyless.stderr);
+    assert_eq!(
+        manifest_of(&keyless.stdout),
+        format!(
+            "manifest has no version key at {}",
+            root.join("herdr-plugin.toml").display()
+        ),
+        "a manifest that parsed must not be reported as a syntax error"
     );
 
     let stranded = dir.dir("a/b/c");

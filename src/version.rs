@@ -19,6 +19,7 @@ pub enum Manifest {
     Found { version: String, path: PathBuf },
     Unreadable(PathBuf),
     Unparsed(PathBuf),
+    NoVersion(PathBuf),
     NoRoot,
 }
 
@@ -48,7 +49,7 @@ pub fn read_manifest(root: Option<&Path>) -> Manifest {
                 version: version.to_string(),
                 path,
             },
-            None => Manifest::Unparsed(path),
+            None => Manifest::NoVersion(path),
         },
         Err(_) => Manifest::Unparsed(path),
     }
@@ -61,6 +62,7 @@ fn manifest_line(manifest: &Manifest) -> String {
         }
         Manifest::Unreadable(path) => format!("manifest unreadable at {}", path.display()),
         Manifest::Unparsed(path) => format!("manifest unparsed at {}", path.display()),
+        Manifest::NoVersion(path) => format!("manifest has no version key at {}", path.display()),
         Manifest::NoRoot => {
             format!(
                 "manifest not found: set {} to the plugin checkout to read it",
