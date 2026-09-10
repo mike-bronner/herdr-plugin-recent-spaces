@@ -710,6 +710,49 @@ fn a_compiled_binary_still_rebuilds_on_a_source_change_when_a_manifest_is_there(
 }
 
 #[test]
+fn a_downloaded_binary_asked_for_its_version_is_told_to_reinstall_it() {
+    let dir = TempDir::new();
+    let root = fake_root(&dir, true);
+    let assets = Assets::start();
+    declare(&root, "9.9.9", assets.base());
+    let asset = asset_name_for_host();
+    let body = std::fs::read(env!("CARGO_BIN_EXE_watch")).unwrap();
+    assets.publish(&asset_path("9.9.9", &asset), &body);
+    assets.publish(
+        &format!("{}.sha256", asset_path("9.9.9", &asset)),
+        format!("{}  {}\n", sha256_of(&body), asset).as_bytes(),
+    );
+
+    let installed = run_build_args(&root, &["--prefer-download"], &[("PATH", LAUNCHD_PATH)]);
+    assert_eq!(installed.status, 0, "{}", installed.stderr);
+    let note = root.join("target/release/watch.download");
+    assert!(
+        note.is_file(),
+        "nothing was downloaded, so nothing is proved"
+    );
+
+    let downloaded = run_script(&root, "bin/watch", &["--version"], &[]);
+    assert_eq!(downloaded.status, 0, "{}", downloaded.stderr);
+    assert_eq!(
+        downloaded.stdout.lines().nth(2).unwrap(),
+        reinstall_verdict("9.9.9"),
+        "the note the download wrote is the one the binary reads, or the reader with \
+         no toolchain is told to compile: {}",
+        downloaded.stdout
+    );
+
+    std::fs::remove_file(&note).unwrap();
+    let compiled = run_script(&root, "bin/watch", &["--version"], &[]);
+    assert_eq!(
+        compiled.stdout.lines().nth(2).unwrap(),
+        rebuild_verdict("9.9.9"),
+        "with the note gone the same binary must answer for a compile, or the test \
+         above passed for some other reason: {}",
+        compiled.stdout
+    );
+}
+
+#[test]
 fn the_shipped_repository_is_an_https_github_url() {
     let parsed = read_repo_file("Cargo.toml").parse::<toml::Table>().unwrap();
     let repository = parsed["package"]["repository"].as_str().unwrap();

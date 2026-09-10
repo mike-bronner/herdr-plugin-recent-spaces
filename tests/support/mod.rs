@@ -13,8 +13,23 @@ use serde_json::{json, Value};
 use recent_spaces::api::{Client, Workspace};
 use recent_spaces::claim::Claim;
 use recent_spaces::config::{Environment, Settings};
+use recent_spaces::version::CRATE_VERSION;
 
 pub const LAUNCHD_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+pub fn rebuild_verdict(manifest_version: &str) -> String {
+    format!(
+        "STALE: this binary is {} but the manifest is {}. Rebuild it with `cargo build --release`.",
+        CRATE_VERSION, manifest_version
+    )
+}
+
+pub fn reinstall_verdict(manifest_version: &str) -> String {
+    format!(
+        "STALE: this binary is {} but the manifest is {}. This binary was downloaded, so reinstall the plugin to get the {} binary.",
+        CRATE_VERSION, manifest_version, manifest_version
+    )
+}
 
 pub struct TempDir {
     path: PathBuf,
