@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::config::{Environment, PLUGIN_ROOT_VAR};
@@ -21,6 +22,26 @@ pub enum Manifest {
     Unparsed(PathBuf),
     NoVersion(PathBuf),
     NoRoot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Request {
+    Watch,
+    Report,
+    Refuse(String),
+}
+
+pub fn requested(arguments: &[OsString]) -> Request {
+    let shown: Vec<String> = arguments
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect();
+    match shown.as_slice() {
+        [] => Request::Watch,
+        [flag] if flag == FLAG => Request::Report,
+        [flag, extra, ..] if flag == FLAG => Request::Refuse(extra.clone()),
+        [first, ..] => Request::Refuse(first.clone()),
+    }
 }
 
 pub fn root_of(env: &Environment) -> Option<PathBuf> {

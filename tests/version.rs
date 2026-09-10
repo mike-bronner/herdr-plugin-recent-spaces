@@ -1,9 +1,12 @@
 mod support;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use recent_spaces::version::{self, Manifest, BUILT, COMMIT, CRATE_VERSION, UNKNOWN_COMMIT};
+use recent_spaces::version::{
+    self, Manifest, Request, BUILT, COMMIT, CRATE_VERSION, UNKNOWN_COMMIT,
+};
 use support::*;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_watch");
@@ -33,7 +36,7 @@ fn bounded(command: &mut Command) -> Run {
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("the version query never exited, so it is polling instead of reporting");
+            panic!("the watcher never exited, so it is polling instead of answering");
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -48,10 +51,10 @@ fn bounded(command: &mut Command) -> Run {
     }
 }
 
-fn ask(binary: &Path, extra: &[(&str, &str)]) -> Run {
+fn invoke(binary: &Path, arguments: &[&str], extra: &[(&str, &str)]) -> Run {
     let mut command = Command::new(binary);
     command
-        .arg("--version")
+        .args(arguments)
         .env_clear()
         .env("PATH", LAUNCHD_PATH)
         .env("HOME", "/private/tmp");
@@ -59,6 +62,10 @@ fn ask(binary: &Path, extra: &[(&str, &str)]) -> Run {
         command.env(key, value);
     }
     bounded(&mut command)
+}
+
+fn ask(binary: &Path, extra: &[(&str, &str)]) -> Run {
+    invoke(binary, &["--version"], extra)
 }
 
 fn run_version(extra: &[(&str, &str)]) -> Run {
@@ -294,6 +301,127 @@ fn asking_for_the_version_never_reaches_the_socket() {
         std::fs::read_dir(state.path()).unwrap().count(),
         0,
         "it claimed the socket instead of reporting and leaving"
+    );
+}
+
+fn refusal_for(argument: &str) -> String {
+    format!(
+        "recent-spaces: unknown argument `{}`; run it with no arguments to watch, or `--version` to report the build\n",
+        argument
+    )
+}
+
+#[test]
+fn an_unrecognised_argument_is_refused_rather_than_starting_a_watcher() {
+    let stub = Stub::start(Script::default().open(vec![listed("~", "w1", true)]));
+    let state = TempDir::new();
+    let env = [
+        ("HERDR_SOCKET_PATH", stub.socket().to_str().unwrap()),
+        ("HERDR_PLUGIN_STATE_DIR", state.path().to_str().unwrap()),
+    ];
+
+    for argument in ["--help", "--versio", "-v", "stray"] {
+        let run = invoke(Path::new(BINARY), &[argument], &env);
+        assert_eq!(run.status, 2, "{}: {}", argument, run.stderr);
+        assert_eq!(run.stdout, "", "{}", argument);
+        assert_eq!(run.stderr, refusal_for(argument));
+    }
+
+    assert_eq!(stub.requests().len(), 0, "{:?}", stub.methods());
+    assert_eq!(
+        std::fs::read_dir(state.path()).unwrap().count(),
+        0,
+        "a refused argument must claim nothing"
+    );
+}
+
+#[test]
+fn an_argument_after_the_flag_is_refused_instead_of_being_dropped() {
+    let run = invoke(Path::new(BINARY), &["--version", "stray"], &[]);
+    assert_eq!(run.status, 2, "{}", run.stderr);
+    assert_eq!(
+        run.stdout, "",
+        "a report beside a refusal is two answers to one question"
+    );
+    assert_eq!(run.stderr, refusal_for("stray"));
+}
+
+#[test]
+fn the_argument_grammar_accepts_nothing_but_the_flag_on_its_own() {
+    let given = |all: &[&str]| -> Vec<OsString> { all.iter().map(OsString::from).collect() };
+    assert_eq!(version::requested(&given(&[])), Request::Watch);
+    assert_eq!(version::requested(&given(&["--version"])), Request::Report);
+    for (arguments, named) in [
+        (vec!["--help"], "--help"),
+        (vec!["--Version"], "--Version"),
+        (vec!["--version="], "--version="),
+        (vec![""], ""),
+        (vec!["--version", "stray"], "stray"),
+        (vec!["stray", "--version"], "stray"),
+    ] {
+        assert_eq!(
+            version::requested(&given(&arguments)),
+            Request::Refuse(named.to_string()),
+            "{:?}",
+            arguments
+        );
+    }
+}
+
+#[test]
+fn an_argument_that_is_not_text_is_refused_rather_than_fatal() {
+    use std::os::unix::ffi::OsStringExt;
+    let raw = OsString::from_vec(vec![0x2d, 0x2d, 0xff, 0xfe]);
+    assert!(matches!(version::requested(&[raw]), Request::Refuse(_)));
+}
+
+struct Running(std::process::Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn with_no_argument_at_all_it_watches_instead_of_answering() {
+    let stub = Stub::start(Script::default().open(vec![listed("~", "w1", true)]));
+    let state = TempDir::new();
+    let mut watcher = Running(
+        Command::new(BINARY)
+            .env_clear()
+            .env("PATH", LAUNCHD_PATH)
+            .env("HOME", "/private/tmp")
+            .env("HERDR_SOCKET_PATH", stub.socket())
+            .env("HERDR_PLUGIN_STATE_DIR", state.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("cannot run the watcher"),
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while stub.methods().is_empty() {
+        assert!(
+            watcher
+                .0
+                .try_wait()
+                .expect("cannot check the watcher")
+                .is_none(),
+            "no argument is how Herdr starts it, so it must watch rather than exit"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "it stayed up without ever reaching the socket"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert!(
+        stub.methods().contains(&"workspace.list".to_string()),
+        "{:?}",
+        stub.methods()
     );
 }
 
