@@ -489,8 +489,24 @@ list with four absolute paths in it cannot be made to fail on a machine that has
 cargo installed.
 
 The tree is rustfmt-formatted on the tool's defaults, with no `rustfmt.toml` to
-carry: `cargo fmt --check` is expected to pass. `cargo clippy --all-targets` is
-expected to be silent.
+carry: `cargo fmt --check` is expected to pass. `cargo clippy --all-targets -- -D
+warnings` is expected to be silent.
+
+### What CI runs, and what it gates
+
+Those three commands are the gates, and they run on every push and every pull
+request. Each one is its own step, so the step that fails names the gate that
+failed, and nothing reads a gate's output: a step fails the job on a non-zero exit
+status, and that is the only thing judged. Two defects reached this repository
+because a check read result lines instead of an exit status, and a job doing the
+same would manufacture confidence rather than earn it.
+
+A release runs the same three gates first, on the very ref it is about to publish
+from, and publishes nothing until they pass. A published asset is what people
+download, and it cannot be recalled once somebody has it.
+
+CI runs on macOS because the suite cannot run anywhere else: its temporary
+directories live under `/private/tmp`, which exists on macOS and not on Linux.
 
 No Rust file carries a comment or a doc comment, tests included, and
 `no_rust_source_file_carries_a_comment` fails the suite when one appears. Test
