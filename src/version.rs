@@ -15,6 +15,14 @@ pub const UNKNOWN_COMMIT: &str = "unknown";
 
 pub const MANIFEST_FILE: &str = "herdr-plugin.toml";
 
+pub const DOWNLOAD_NOTE: &str = ".download";
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Origin {
+    Compiled,
+    Downloaded,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Manifest {
     Found { version: String, path: PathBuf },
@@ -56,6 +64,18 @@ pub fn root_of(env: &Environment) -> Option<PathBuf> {
     }
 }
 
+pub fn origin_of(exe: Option<PathBuf>) -> Origin {
+    let Some(exe) = exe else {
+        return Origin::Compiled;
+    };
+    let mut note = exe.into_os_string();
+    note.push(DOWNLOAD_NOTE);
+    match PathBuf::from(note).is_file() {
+        true => Origin::Downloaded,
+        false => Origin::Compiled,
+    }
+}
+
 pub fn read_manifest(root: Option<&Path>) -> Manifest {
     let Some(root) = root else {
         return Manifest::NoRoot;
@@ -93,7 +113,17 @@ fn manifest_line(manifest: &Manifest) -> String {
     }
 }
 
-fn stale_line(manifest: &Manifest) -> Option<String> {
+fn remedy(origin: Origin, version: &str) -> String {
+    match origin {
+        Origin::Compiled => "Rebuild it with `cargo build --release`.".to_string(),
+        Origin::Downloaded => format!(
+            "This binary was downloaded, so reinstall the plugin to get the {} binary.",
+            version
+        ),
+    }
+}
+
+fn stale_line(manifest: &Manifest, origin: Origin) -> Option<String> {
     let Manifest::Found { version, .. } = manifest else {
         return None;
     };
@@ -101,17 +131,19 @@ fn stale_line(manifest: &Manifest) -> Option<String> {
         return None;
     }
     Some(format!(
-        "STALE: this binary is {} but the manifest is {}. Rebuild it with `cargo build --release`.",
-        CRATE_VERSION, version
+        "STALE: this binary is {} but the manifest is {}. {}",
+        CRATE_VERSION,
+        version,
+        remedy(origin, version)
     ))
 }
 
-pub fn report(name: &str, manifest: &Manifest) -> String {
+pub fn report(name: &str, manifest: &Manifest, origin: Origin) -> String {
     let mut lines = vec![
         format!("{} {} ({}, built {})", name, CRATE_VERSION, COMMIT, BUILT),
         manifest_line(manifest),
     ];
-    if let Some(stale) = stale_line(manifest) {
+    if let Some(stale) = stale_line(manifest, origin) {
         lines.push(stale);
     }
     lines.push(String::new());

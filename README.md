@@ -213,6 +213,20 @@ third line rather than leaving you to compare two numbers:
 STALE: this binary is 0.5.0 but the manifest is 0.5.1. Rebuild it with `cargo build --release`.
 ```
 
+**The remedy follows where the binary came from, because the two readers can do
+different things.** The line above is for a compiled binary, which belongs to the
+source beside it. A downloaded one belongs to a release, and whoever installed it
+has no toolchain to rebuild with, so it is told the thing that works for them:
+
+```
+STALE: this binary is 0.5.0 but the manifest is 0.5.1. This binary was downloaded, so reinstall the plugin to get the 0.5.1 binary.
+```
+
+The note beside a downloaded binary is what tells the two apart, and it is the
+same note the shim reads to decide what "stale" means. No note means compiled,
+which is the shim's own reading, so a binary that cannot find its own path on disk
+says `Rebuild` rather than guessing the other way.
+
 The commit is the other half of the answer. Under this repo's release convention
 the version only moves on a release commit, so a binary several commits behind
 its source reports the same version as the source does. The commit is what tells
@@ -225,12 +239,10 @@ when the source is newer, but only `[[startup]]` ever invokes the shim, so nothi
 happens between a `git pull` and the next server restart. The watcher running in
 that window is the old code, and the commit is the evidence.
 
-What clears the `STALE:` line depends on where the binary came from, and a server
-restart clears it either way. A compiled one is rebuilt from the source beside it,
-which is what the line suggests. A downloaded one is replaced by the binary
-published for the version now declared, and `cargo build --release` is not how you
-get it — restart Herdr, or reinstall. The line names the one action that works
-with a toolchain, and does not know which kind of binary is reading it.
+A server restart also clears the `STALE:` line, because the shim runs then and
+gets a current binary whichever way it can: it compiles when a toolchain is there,
+and downloads the published binary when there is none. The line names the action
+you can take yourself, where you are reading it.
 
 So **asking for the version never builds**. The shim answers the flag before its
 staleness check, because a version command that rebuilt first would erase the

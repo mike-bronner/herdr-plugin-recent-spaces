@@ -23,7 +23,11 @@ fn main() {
 fn report_the_build() {
     let env = Environment::from_process();
     let manifest = version::read_manifest(version::root_of(&env).as_deref());
-    print!("{}", version::report(env!("CARGO_BIN_NAME"), &manifest));
+    let origin = version::origin_of(std::env::current_exe().ok());
+    print!(
+        "{}",
+        version::report(env!("CARGO_BIN_NAME"), &manifest, origin)
+    );
 }
 
 fn refuse(argument: &str) -> ! {

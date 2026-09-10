@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use recent_spaces::version::{
-    self, Manifest, Request, BUILT, COMMIT, CRATE_VERSION, UNKNOWN_COMMIT,
+    self, Manifest, Origin, Request, BUILT, COMMIT, CRATE_VERSION, DOWNLOAD_NOTE, UNKNOWN_COMMIT,
 };
 use support::*;
 
@@ -189,6 +189,7 @@ fn a_manifest_it_cannot_read_is_named_rather_than_guessed_at() {
     let report = version::report(
         "watch",
         &Manifest::Unreadable(dir.join("herdr-plugin.toml")),
+        Origin::Compiled,
     );
     assert_eq!(
         manifest_of(&report),
@@ -203,7 +204,11 @@ fn a_manifest_it_cannot_read_is_named_rather_than_guessed_at() {
 #[test]
 fn a_manifest_with_no_version_key_is_told_apart_from_one_that_will_not_parse() {
     let dir = TempDir::new();
-    let report = version::report("watch", &Manifest::NoVersion(dir.join("herdr-plugin.toml")));
+    let report = version::report(
+        "watch",
+        &Manifest::NoVersion(dir.join("herdr-plugin.toml")),
+        Origin::Compiled,
+    );
     assert_eq!(
         manifest_of(&report),
         format!(
@@ -218,7 +223,7 @@ fn a_manifest_with_no_version_key_is_told_apart_from_one_that_will_not_parse() {
 
 #[test]
 fn with_no_plugin_root_the_manifest_line_says_how_to_point_at_one() {
-    let report = version::report("watch", &Manifest::NoRoot);
+    let report = version::report("watch", &Manifest::NoRoot, Origin::Compiled);
     assert_eq!(
         manifest_of(&report),
         "manifest not found: set HERDR_PLUGIN_ROOT to the plugin checkout to read it"
@@ -226,20 +231,88 @@ fn with_no_plugin_root_the_manifest_line_says_how_to_point_at_one() {
     assert_eq!(report.lines().count(), 2, "{}", report);
 }
 
-#[test]
-fn the_stale_verdict_names_both_versions_and_the_fix() {
-    let manifest = Manifest::Found {
-        version: "9.9.9".to_string(),
+fn found(version: &str) -> Manifest {
+    Manifest::Found {
+        version: version.to_string(),
         path: PathBuf::from("/p/herdr-plugin.toml"),
-    };
-    let report = version::report("watch", &manifest);
+    }
+}
+
+fn verdict_of(report: &str) -> String {
+    report.lines().nth(2).unwrap().to_string()
+}
+
+#[test]
+fn the_stale_verdict_names_both_versions_and_tells_a_compiled_binary_to_rebuild() {
+    let report = version::report("watch", &found("9.9.9"), Origin::Compiled);
     assert_eq!(report.lines().count(), 3, "{}", report);
+    assert_eq!(verdict_of(&report), rebuild_verdict("9.9.9"));
+}
+
+#[test]
+fn a_downloaded_binary_is_told_to_reinstall_rather_than_to_rebuild() {
+    let report = version::report("watch", &found("9.9.9"), Origin::Downloaded);
+    assert_eq!(report.lines().count(), 3, "{}", report);
+    assert_eq!(verdict_of(&report), reinstall_verdict("9.9.9"));
+    assert!(
+        !report.contains("cargo"),
+        "whoever installed a published binary has no toolchain, so a rebuild is \
+         not an instruction they can follow: {}",
+        report
+    );
+}
+
+#[test]
+fn a_note_beside_the_binary_is_what_tells_a_download_from_a_compile() {
+    let dir = TempDir::new();
+    let binary = dir.write("watch", "");
+    assert_eq!(version::origin_of(Some(binary.clone())), Origin::Compiled);
+
+    let note = dir.write(&format!("watch{}", DOWNLOAD_NOTE), "version=9.9.9\n");
+    assert_eq!(version::origin_of(Some(binary.clone())), Origin::Downloaded);
+
+    std::fs::remove_file(&note).unwrap();
+    std::fs::create_dir(&note).unwrap();
     assert_eq!(
-        report.lines().nth(2).unwrap(),
-        format!(
-            "STALE: this binary is {} but the manifest is 9.9.9. Rebuild it with `cargo build --release`.",
-            CRATE_VERSION
-        )
+        version::origin_of(Some(binary)),
+        Origin::Compiled,
+        "the shim asks `[ -f ]` of this path, so a directory of that name is not a \
+         note to either of them"
+    );
+
+    assert_eq!(
+        version::origin_of(None),
+        Origin::Compiled,
+        "a binary that cannot find itself reads as compiled, which is what the shim \
+         assumes when no note is there"
+    );
+}
+
+#[test]
+fn the_remedy_a_running_binary_prints_follows_where_that_binary_came_from() {
+    let dir = TempDir::new();
+    let root = dir.dir("root");
+    std::fs::write(root.join("herdr-plugin.toml"), "version = \"9.9.9\"\n").unwrap();
+    let placed = dir.dir("place").join("watch");
+    std::fs::copy(BINARY, &placed).unwrap();
+    let env = [("HERDR_PLUGIN_ROOT", root.to_str().unwrap())];
+
+    let compiled = ask(&placed, &env);
+    assert_eq!(compiled.status, 0, "{}", compiled.stderr);
+    assert_eq!(verdict_of(&compiled.stdout), rebuild_verdict("9.9.9"));
+
+    std::fs::write(
+        placed.with_file_name(format!("watch{}", DOWNLOAD_NOTE)),
+        "version=9.9.8\n",
+    )
+    .unwrap();
+    let downloaded = ask(&placed, &env);
+    assert_eq!(downloaded.status, 0, "{}", downloaded.stderr);
+    assert_eq!(
+        verdict_of(&downloaded.stdout),
+        reinstall_verdict("9.9.9"),
+        "the same binary must answer for the note beside it rather than for how it \
+         was built"
     );
 }
 
@@ -593,11 +666,8 @@ fn a_manifest_that_disagrees_with_the_binary_is_diagnosed_at_run_time() {
     let stale = ask(&binary, &[("HERDR_PLUGIN_ROOT", root.to_str().unwrap())]);
     assert_eq!(stale.status, 0, "{}", stale.stderr);
     assert_eq!(
-        stale.stdout.lines().nth(2).unwrap(),
-        format!(
-            "STALE: this binary is {} but the manifest is 9.9.9. Rebuild it with `cargo build --release`.",
-            CRATE_VERSION
-        ),
+        verdict_of(&stale.stdout),
+        rebuild_verdict("9.9.9"),
         "the same binary must notice without being rebuilt"
     );
 
