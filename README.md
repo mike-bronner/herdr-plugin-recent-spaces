@@ -123,6 +123,53 @@ and says on stderr that it may be stale. When there is neither, it stops and say
 how to install a toolchain. A `[[startup]]` command has no terminal, so stderr
 and `herdr plugin log` are the only places either message can appear.
 
+## Which build is running
+
+```sh
+sh bin/watch --version
+```
+
+```
+watch 0.5.0 (e9e9f44, built 2026-09-10T17:28:48Z)
+manifest 0.5.0 at /Users/you/Developer/herdr-plugin-recent-spaces/herdr-plugin.toml
+```
+
+Two versions, each labelled with where it came from. The first is compiled into
+the binary. The second is read from the manifest on disk at the moment you ask,
+which is the copy Herdr itself reads. When they disagree the binary says so in a
+third line rather than leaving you to compare two numbers:
+
+```
+STALE: this binary is 0.5.0 but the manifest is 0.5.1. Rebuild it with `cargo build --release`.
+```
+
+The commit is the other half of the answer. Under this repo's release convention
+the version only moves on a release commit, so a binary several commits behind
+its source reports the same version as the source does. The commit is what tells
+them apart. It carries the state of the tree it was built from: `-dirty` when
+that tree had uncommitted changes, and `-unverified` when the check itself could
+not run, because an unverifiable tree must not be reported as a clean one.
+
+That matters here because of one window. The shim rebuilds when the source is
+newer, but only `[[startup]]` ever invokes the shim, so nothing rebuilds between
+a `git pull` and the next server restart. The watcher running in that window is
+the old code, and the commit is the evidence.
+
+So **asking for the version never builds**. The shim answers the flag before its
+staleness check, because a version command that rebuilt first would erase the
+condition it exists to report. Nothing connects to the socket either, so the
+answer is the same with Herdr stopped.
+
+The timestamp is UTC, and it is when the binary was compiled rather than when the
+commit was made. A build from a tree with no `git` available reads `unknown` in
+place of the commit rather than failing, because Herdr aborts an install whose
+build step fails and installs no toolchains.
+
+Nothing on this path can fail. A manifest that is missing, unreadable or
+unparseable is named as such on the second line, and the binary still exits 0. It
+also finds its own checkout when `HERDR_PLUGIN_ROOT` is unset, so running the
+binary directly from a shell answers the same as running it through the shim.
+
 ## How it talks to Herdr
 
 Over Herdr's socket, at `HERDR_SOCKET_PATH`, and not by shelling out to the CLI.

@@ -6,11 +6,25 @@ use recent_spaces::claim::FileClaim;
 use recent_spaces::config::{self, Environment};
 use recent_spaces::promote::{self, Dwell};
 use recent_spaces::retire;
+use recent_spaces::version;
 
 fn main() {
+    if asked_for_the_version() {
+        let env = Environment::from_process();
+        let manifest = version::read_manifest(version::root_of(&env).as_deref());
+        print!("{}", version::report(env!("CARGO_BIN_NAME"), &manifest));
+        return;
+    }
     if catch_unwind_of(run).is_err() {
         note("the watcher stopped on a fault it could not handle");
     }
+}
+
+fn asked_for_the_version() -> bool {
+    std::env::args_os()
+        .nth(1)
+        .map(|first| first == version::FLAG)
+        .unwrap_or(false)
 }
 
 fn catch_unwind_of(body: fn()) -> Result<(), ()> {
