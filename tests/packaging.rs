@@ -21,7 +21,7 @@ fn argv(entry: &toml::Value) -> Vec<String> {
 }
 
 fn rust_files() -> Vec<PathBuf> {
-    let mut found = Vec::new();
+    let mut found = vec![manifest_dir().join("build.rs")];
     for dir in ["src", "tests", "tests/support"] {
         let Ok(entries) = std::fs::read_dir(manifest_dir().join(dir)) else {
             continue;
@@ -185,6 +185,7 @@ fn every_rust_source_file_is_covered_by_that_guard() {
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .collect();
     for name in [
+        "build.rs",
         "main.rs",
         "lib.rs",
         "api.rs",
@@ -192,6 +193,7 @@ fn every_rust_source_file_is_covered_by_that_guard() {
         "config.rs",
         "promote.rs",
         "retire.rs",
+        "version.rs",
         "mod.rs",
         "promotion.rs",
         "retirement.rs",
@@ -370,6 +372,58 @@ fn a_failed_build_with_no_binary_at_all_refuses_and_names_the_path() {
         "{}",
         run.stderr
     );
+}
+
+#[test]
+fn the_shim_reports_the_version_without_building_anything() {
+    let dir = TempDir::new();
+    let root = fake_root(&dir, false);
+    executable(&root.join("bin/build"), "#!/bin/sh\necho BUILT >&2\n");
+    executable(
+        &root.join("target/release/watch"),
+        "#!/bin/sh\necho \"watch 9.9.9\"\n",
+    );
+    set_mtime(&root.join("target/release/watch"), 1000);
+    set_mtime(&root.join("src/main.rs"), 3000);
+
+    let run = run_script(&root, "bin/watch", &["--version"], &[]);
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, "watch 9.9.9\n");
+    assert!(
+        !run.stderr.contains("BUILT"),
+        "a rebuild would hide the staleness the version exists to show: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn asking_the_shim_for_the_version_with_no_binary_refuses_without_building() {
+    let dir = TempDir::new();
+    let root = fake_root(&dir, false);
+    executable(&root.join("bin/build"), "#!/bin/sh\necho BUILT >&2\n");
+
+    let run = run_script(&root, "bin/watch", &["--version"], &[]);
+    assert_eq!(run.status, 1);
+    assert_eq!(run.stdout, "");
+    assert!(
+        run.stderr.contains("target/release/watch"),
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains("BUILT"), "{}", run.stderr);
+}
+
+#[test]
+fn the_shim_builds_as_usual_for_every_other_argument() {
+    let dir = TempDir::new();
+    let root = fake_root(&dir, false);
+    executable(&root.join("bin/build"), "#!/bin/sh\necho BUILT >&2\n");
+    executable(&root.join("target/release/watch"), "#!/bin/sh\necho RAN\n");
+    set_mtime(&root.join("target/release/watch"), 1000);
+    set_mtime(&root.join("src/main.rs"), 3000);
+
+    let run = run_script(&root, "bin/watch", &["--version-ish"], &[]);
+    assert!(run.stderr.contains("BUILT"), "{}", run.stderr);
 }
 
 #[test]

@@ -7,6 +7,13 @@ BIN="$PLUGIN_ROOT/target/release/watch"
 say() { printf 'recent-spaces: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
+case "${1:-}" in
+    --version)
+        [ -x "$BIN" ] || die "no watcher binary at $BIN"
+        HERDR_PLUGIN_ROOT="$PLUGIN_ROOT" exec "$BIN" --version
+        ;;
+esac
+
 needs_build() {
     [ -x "$BIN" ] || return 0
     [ -n "$(find "$PLUGIN_ROOT/src" "$PLUGIN_ROOT/Cargo.toml" "$PLUGIN_ROOT/Cargo.lock" \
