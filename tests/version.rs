@@ -275,13 +275,20 @@ fn reading_a_manifest_tells_the_failures_apart() {
     );
 }
 
+const COMPILED_FROM: [&str; 4] = ["src", "build.rs", "Cargo.toml", "Cargo.lock"];
+
 #[test]
 fn the_commit_carries_the_state_of_the_tree_it_was_built_from() {
     let head = git_out(&manifest_dir(), &["rev-parse", "--short", "HEAD"]);
-    let changes = git_out(&manifest_dir(), &["status", "--porcelain"]);
+    let mut porcelain = vec!["status", "--porcelain", "--"];
+    porcelain.extend(COMPILED_FROM);
+    let changes = git_out(&manifest_dir(), &porcelain);
+    let because = "this pathspec is the one build.rs computes the marker under, and asking a wider question here would fail whenever an uncompiled file happened to be edited";
     match (head, changes) {
-        (Some(head), Some(changes)) if changes.is_empty() => assert_eq!(COMMIT, head),
-        (Some(head), Some(_)) => assert_eq!(COMMIT, format!("{}-dirty", head)),
+        (Some(head), Some(changes)) if changes.is_empty() => {
+            assert_eq!(COMMIT, head, "{}", because)
+        }
+        (Some(head), Some(_)) => assert_eq!(COMMIT, format!("{}-dirty", head), "{}", because),
         (Some(head), None) => assert_eq!(COMMIT, format!("{}-unverified", head)),
         (None, _) => assert_eq!(COMMIT, UNKNOWN_COMMIT),
     }
