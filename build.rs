@@ -1,11 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const INPUTS: [&str; 4] = ["src", "build.rs", "Cargo.toml", "Cargo.lock"];
+
+const GIT_PATHS: [&str; 3] = ["HEAD", "refs", "packed-refs"];
+
 fn main() {
-    println!("cargo:rerun-if-changed=src");
-    println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-changed=Cargo.lock");
+    for input in INPUTS {
+        println!("cargo:rerun-if-changed={}", input);
+    }
     for path in git_watch_paths() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
@@ -14,24 +18,21 @@ fn main() {
 }
 
 fn git_watch_paths() -> Vec<PathBuf> {
-    let git = Path::new(".git");
-    if !git.exists() {
-        return Vec::new();
-    }
-    let mut paths = vec![git.join("HEAD"), git.join("packed-refs"), git.join("index")];
-    if let Ok(head) = std::fs::read_to_string(git.join("HEAD")) {
-        if let Some(reference) = head.trim().strip_prefix("ref: ") {
-            paths.push(git.join(reference));
-        }
-    }
-    paths
+    GIT_PATHS
+        .iter()
+        .filter_map(|name| git(&["rev-parse", "--git-path", name]))
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
 }
 
 fn commit() -> String {
     let Some(short) = git(&["rev-parse", "--short", "HEAD"]) else {
         return "unknown".to_string();
     };
-    match Command::new("git").args(["status", "--porcelain"]).output() {
+    let mut status = vec!["status", "--porcelain", "--"];
+    status.extend(INPUTS);
+    match Command::new("git").args(&status).output() {
         Ok(out) if !out.status.success() => format!("{}-unverified", short),
         Err(_) => format!("{}-unverified", short),
         Ok(out) if !String::from_utf8_lossy(&out.stdout).trim().is_empty() => {
