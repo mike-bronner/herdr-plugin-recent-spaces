@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+PLUGIN_ROOT="${HERDR_PLUGIN_ROOT:-$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}"
+BIN="$PLUGIN_ROOT/target/release/watch"
+
+say() { printf 'recent-spaces: %s\n' "$*" >&2; }
+die() { say "$*"; exit 1; }
+
+needs_build() {
+    [ -x "$BIN" ] || return 0
+    [ -n "$(find "$PLUGIN_ROOT/src" "$PLUGIN_ROOT/Cargo.toml" "$PLUGIN_ROOT/Cargo.lock" \
+            -newer "$BIN" -print -quit 2>/dev/null)" ]
+}
+
+if needs_build; then
+    if HERDR_PLUGIN_ROOT="$PLUGIN_ROOT" sh "$PLUGIN_ROOT/bin/build"; then
+        :
+    elif [ -x "$BIN" ]; then
+        say "the build failed; running the watcher already built, which may be stale"
+    else
+        die "no watcher binary at $BIN and it could not be built"
+    fi
+fi
+
+[ -x "$BIN" ] || die "no watcher binary at $BIN"
+
+exec "$BIN" "$@"

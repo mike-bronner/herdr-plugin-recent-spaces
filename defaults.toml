@@ -1,0 +1,28 @@
+# The defaults this plugin ships with.
+#
+# Read last, after your own config.toml and after your .env, so every value
+# here is one you can override without editing the plugin. It is the same
+# [recent] table in the same syntax you write, which is the point: a default is
+# a value to replace rather than a fallback buried in the code.
+#
+# The watcher reads this file once, when the Herdr server starts it. A change
+# to any setting therefore needs a server restart, like the [[startup]] entry
+# that launches it.
+
+[recent]
+# Seconds focus must rest in a workspace before it is promoted to the top of
+# the sidebar. Quick flicks through workspaces reorder nothing.
+#
+# The watcher asks Herdr which workspace has focus every two seconds, so a
+# promotion lands between this value and this value plus two seconds. A value
+# that is not a number of seconds is reported on stderr and this default is
+# used instead, because a typo in optional config must never stop the reorder.
+dwell = 10
+
+# The label of the workspace held at the very top of the sidebar, above every
+# promotion, and never promoted itself. Herdr labels the home workspace "~".
+#
+# Set it to a label no workspace carries to turn pinning off: the watcher holds
+# nothing and promotes into index 1 as it always does, leaving index 0 to
+# whatever Herdr put there.
+pin = "~"
