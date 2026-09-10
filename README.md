@@ -5,13 +5,17 @@ terminal multiplexer, in most-recently-used order.
 
 ## What it does
 
-`bin/watch-focus` runs for the whole life of your Herdr server. Once you have
-stayed in a workspace for a dwell period (`HERDR_RECENT_DWELL`, default 10
-seconds) it is moved to the top of the sidebar, so the list reads newest to
-oldest. Quick flicks through workspaces do not reorder anything.
+The watcher runs for the whole life of your Herdr server. Once focus has rested
+in a workspace for a dwell period (10 seconds by default) that workspace is moved
+to the top of the sidebar, so the list reads newest to oldest. Quick flicks
+through workspaces reorder nothing.
 
-The home workspace (label `~`, `HERDR_RECENT_PIN` to override) is pinned at the
-very top and never moves.
+The home workspace (label `~`, configurable) is pinned at the very top and never
+moves. A workspace is promoted once per visit: leave it and come back and its
+dwell starts afresh, rather than resuming where it left off.
+
+Pairs well with [herdr-plugin-project-finder](https://github.com/mike-bronner/herdr-plugin-project-finder),
+which opens the workspaces this plugin then keeps in order.
 
 ## Why it polls
 
@@ -38,16 +42,21 @@ the Herdr it was written against: it drove 926 promotions in the week to
 herdr plugin install mike-bronner/herdr-plugin-recent-spaces
 ```
 
-To work on the plugin instead, clone it and link the working copy by absolute
-path:
+Pin a particular revision with `--ref`:
+
+```sh
+herdr plugin install mike-bronner/herdr-plugin-recent-spaces --ref v0.5.0
+```
+
+To work on the plugin instead, clone it and link the checkout:
 
 ```sh
 git clone git@github.com:mike-bronner/herdr-plugin-recent-spaces.git
 herdr plugin link /absolute/path/to/herdr-plugin-recent-spaces
 ```
 
-Needs Herdr 0.9.0 or newer, which is where `[[startup]]` arrived, and
-`/usr/bin/python3`.
+Needs Herdr 0.9.0 or newer, which is where `[[startup]]` arrived, and a Rust
+toolchain the first time it runs. See [requires](#requires).
 
 ### Installing is not enough on its own — restart the server
 
@@ -67,68 +76,221 @@ herdr server stop     # then start Herdr again
 listing lags by a few seconds and resets on every server restart, so a reading
 taken immediately after the restart means nothing.
 
-## Configure
+### Updating
 
-Settings live in a `.env` file in the plugin config directory:
+Herdr v1 has no separate plugin update command. Reinstall from GitHub to refresh
+a managed install:
 
 ```sh
-herdr plugin config-dir mikebronner.recent-spaces
-# /Users/you/.config/herdr/plugins/config/mikebronner.recent-spaces
+herdr plugin install mike-bronner/herdr-plugin-recent-spaces
 ```
 
-```ini
-# seconds of dwell before a workspace is promoted (default: 10)
+A linked checkout is updated with `git pull`, since Herdr runs the plugin out of
+that directory. Note that `herdr plugin list` may still report the version the
+link was registered at, so treat the version it prints for a linked plugin as
+unreliable.
+
+Either way the watcher rebuilds itself on the next server start, and the running
+watcher from before the update retires itself when the new one claims the socket.
+
+## How the binary is built
+
+The watcher is a Rust binary. `bin/watch` is a small `sh` shim: it checks whether
+anything under `src/`, `Cargo.toml` or `Cargo.lock` is newer than the built
+binary, rebuilds if so, and then runs it. The manifest points Herdr at the shim
+and never at the build output, so nothing breaks when a profile or a path
+changes.
+
+The shim exists because Herdr's `[[build]]` steps run **only** during
+`herdr plugin install owner/repo`. They do not run for `herdr plugin link`, and
+they do not run on update. A linked checkout would therefore never build itself,
+and an update would keep running the old binary until you noticed. A stale binary
+cannot be relied on to notice that for you, because the code that would do the
+noticing is part of what changed, which is why the check sits in the shim and not
+in the watcher. `[[build]]` is declared as well, so that a GitHub install shows a
+visible build step rather than stalling silently on first use.
+
+Finding `cargo` by absolute path is not enough. Herdr's server runs under launchd
+with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, and `cargo` is a rustup shim that
+execs `rustc` out of its own directory — so a cold build dies with
+`could not execute process rustc -vV`. `bin/build` therefore prepends the cargo
+binary's own directory to the `PATH` it builds under. It looks on the `PATH`
+first, then at `$CARGO`, `$CARGO_HOME/bin/cargo`, `~/.cargo/bin/cargo`, and the
+usual Homebrew rustup and `/usr/local` locations.
+
+When cargo is missing but a binary is already there, the shim runs that binary
+and says on stderr that it may be stale. When there is neither, it stops and says
+how to install a toolchain. A `[[startup]]` command has no terminal, so stderr
+and `herdr plugin log` are the only places either message can appear.
+
+## How it talks to Herdr
+
+Over Herdr's socket, at `HERDR_SOCKET_PATH`, and not by shelling out to the CLI.
+The wire protocol is newline-delimited JSON with no handshake: one connection per
+request, `{id, method, params}` out and `{id, result}` or `{id, error}` back. The
+watcher uses `workspace.list` and `workspace.move`, and nothing else.
+
+The socket is the only way in for this plugin either way: `herdr workspace` offers
+`list`, `create`, `get`, `focus`, `rename`, `report-metadata` and `close`, with no
+`move` among them. The choice still earns itself, because an error comes back with
+a code: a workspace Herdr refuses to move can be told apart from a server that has
+gone away, without matching a phrase on stderr.
+
+## Configure
+
+Every setting is optional. They are written as TOML, in the plugin's
+`config.toml`, so they read like the rest of your Herdr configuration:
+
+```sh
+$EDITOR "$(herdr plugin config-dir mikebronner.recent-spaces)/config.toml"
+```
+
+```toml
+[recent]
+# Seconds of dwell before a workspace is promoted. Default: 10
+dwell = 10
+
+# Label of the workspace pinned at the top, which is never promoted.
+# Default: ~
+pin = "~"
+```
+
+### The `.env` file
+
+The same two settings can also be written as environment variables in a `.env`
+file in the same directory, which is where they lived before `config.toml`. It
+still works, so an existing one keeps being read.
+
+```sh
+$EDITOR "$(herdr plugin config-dir mikebronner.recent-spaces)/.env"
+```
+
+```sh
+# Seconds of dwell before a workspace is promoted. Default: 10
 HERDR_RECENT_DWELL=10
 
-# label of the workspace pinned at the top (default: ~)
+# Label of the workspace pinned at the top. Default: ~
 HERDR_RECENT_PIN=~
 ```
 
-Both keys are optional. Real environment variables win over the file, a comment
-needs a line of its own, and anything the plugin cannot parse falls back to the
-default rather than breaking the watcher. Settings are read once, when the
-watcher starts, so a change needs a server restart like any other.
+Values may be quoted. `#` starts a comment only at the beginning of a line, and a
+line without `=` is ignored.
+
+### Which setting wins
+
+A real environment variable, then `config.toml`, then `.env`, then the
+`defaults.toml` this plugin ships. Setting one in your shell overrides both your
+files, for that run only. Where both of your files name the same setting
+`config.toml` wins, because it is the format these settings moved to and a `.env`
+left behind should not quietly outrank the file replacing it. A setting only one
+file names is taken from that one, so they merge per setting rather than all or
+nothing.
+
+`defaults.toml` is read last and lives in the plugin's own checkout, not in your
+config directory. It is the same `[recent]` table in the same syntax, which is
+the point: a default is a value you replace rather than one buried in the code.
+
+None of the files has to exist, and none has to parse. A missing, unreadable or
+malformed one contributes nothing and the watcher runs on its defaults. A dwell
+that is not a number of seconds, a key the plugin has no setting for, and a file
+that does not parse are each reported on stderr and then ignored: this plugin
+holds a slot in Herdr's plugin pool for the whole session, so a typo in optional
+config must never be what stops the sidebar reordering.
+
+Set `pin` to a label no workspace carries to turn pinning off. Nothing is then
+held at the top, and promotions still go to index 1, leaving index 0 to whatever
+Herdr put there.
+
+Settings are read once, when the server starts the watcher, so a change to any of
+them needs a server restart like the `[[startup]]` entry itself.
 
 ## Exactly one watcher
 
 Herdr does **not** stop a `[[startup]]` process when the server stops. It is
 reparented to init and keeps running, so every server restart would otherwise
-leave another watcher behind, and each would promote independently and fight
-over the sidebar order.
+leave another watcher behind, and each would promote independently and fight over
+the sidebar order.
 
 It is worse than a cosmetic fight. Startup commands and event hooks share one
 pool of **32 concurrent plugin commands** across the whole machine, and a
-long-lived watcher holds a slot for as long as it lives. Enough orphans and
-every plugin hook you have stops dispatching, silently.
+long-lived watcher holds a slot for as long as it lives. Enough orphans and every
+plugin hook you have stops dispatching, silently.
 
 So the watcher retires itself, two ways:
 
 - **Newest wins.** It writes a token to a claim file in its Herdr-provided state
-  directory and re-reads it every poll, exiting as soon as the token is no
-  longer its own. A restart's watcher therefore retires the survivor within one
-  poll. The claim file is named after the socket path, because the state
-  directory is shared by every named session in a config root.
+  directory and re-reads it every poll, exiting as soon as the token is no longer
+  its own. A restart's watcher therefore retires the survivor within one poll.
+  The claim file is named after the socket path, because the state directory is
+  shared by every named session in a config root: one claim file for all of them
+  would make each session's watcher retire the others'.
 - **A dead server is final.** After 30 continuous seconds of not reaching the
   socket it exits, so the last watcher goes when you quit Herdr for good.
 
-If you ever need to stop the watcher by hand, delete the claim file
-(`recent-spaces-watcher-*.json` in `herdr plugin config-dir`'s sibling state
-directory) and it leaves within one poll.
+A watcher that cannot write its claim at all never starts polling. The claim is
+the authority to move anything, so no claim means no reordering rather than an
+unretirable watcher.
+
+If you ever need to stop the watcher by hand, delete its claim file
+(`recent-spaces-watcher-*.json` in the plugin's state directory, which names the
+pid inside) and it leaves within one poll.
 
 There is no supervisor: a `[[startup]]` command that exits is not restarted, and
-no event hook is left as a floor. The watcher therefore swallows every error and
-keeps polling, and a restart of the Herdr server is the way to bring it back.
+no event hook is left as a floor. So nothing in the poll loop is allowed to end
+the process — every failure, including a panic, is counted against the 30-second
+grace period and then forgiven — and a restart of the Herdr server is the way to
+bring the watcher back after it has gone.
+
+### Upgrading from the Python watcher
+
+Versions up to 0.5.0 shipped `bin/watch-focus`, a Python script. Its claim file
+was keyed differently, so the Rust watcher cannot retire a Python one that is
+still running from an earlier server start. Both promote the focused workspace to
+the same index, so the overlap changes nothing you can see, and the survivor
+leaves on its own the next time Herdr is down for 30 seconds. To be rid of it
+straight away:
+
+```sh
+pkill -f bin/watch-focus
+```
+
+## Requires
+
+A Rust toolchain — `cargo` 1.75 or newer — the first time the plugin runs, and
+after every change to its source. Nothing else: the watcher talks to Herdr over
+the socket, so there is no runtime dependency to install.
+
+Herdr's manifest has no dependency field, so the toolchain requirement is
+declared as a `[[build]]` step that runs `sh bin/build` at install time. With no
+toolchain at all it stops wherever it runs and says how to install one:
+
+```
+recent-spaces: cargo not found; install a Rust toolchain (1.75 or newer), then
+run `cargo build --release` in /path/to/herdr-plugin-recent-spaces
+```
 
 ## Tests
 
 ```sh
-python3 -m unittest discover tests
+cargo test
 ```
 
-One check needs a newer interpreter than the plugin does. The suite parses
-`herdr-plugin.toml` for real, because Herdr re-reads that file and a syntax
-error in it stops the plugin silently. Parsing needs `tomllib`, which arrived in
-Python 3.11, and the `python3` this plugin runs under is 3.9 on macOS. Under 3.9
-that one check is skipped and the run prints a banner saying so, because a green
-suite there is not a checked manifest. Run the suite under a 3.11 or newer
-interpreter to include it.
+The suite runs the watcher against a stub Herdr server over a real Unix socket,
+so what is checked is the requests it does and does not send. The dwell clock,
+the poll interval and the 30-second grace period are driven by injected clocks
+rather than by waiting, so the whole suite takes well under a second.
+
+`herdr-plugin.toml` is parsed for real, because Herdr re-reads that file at
+dispatch time and a syntax error in it stops the plugin silently, with no toast
+and nothing surfaced. `bin/watch` and `bin/build` are run for real too, against
+fake plugin roots and a stubbed cargo, under the launchd `PATH`.
+
+The tree is rustfmt-formatted on the tool's defaults, with no `rustfmt.toml` to
+carry: `cargo fmt --check` is expected to pass. `cargo clippy --all-targets` is
+expected to be silent.
+
+No Rust file carries a comment or a doc comment, tests included, and
+`no_rust_source_file_carries_a_comment` fails the suite when one appears. Test
+names carry the intent instead, and what a name cannot hold goes in this README,
+in [`docs/herdr-behaviour.md`](docs/herdr-behaviour.md), or in the commented
+`defaults.toml`.
