@@ -59,9 +59,10 @@ git clone git@github.com:mike-bronner/herdr-plugin-recent-spaces.git
 herdr plugin link /absolute/path/to/herdr-plugin-recent-spaces
 ```
 
-Needs Herdr 0.9.0 or newer, which is where `[[startup]]` arrived. **No Rust
-toolchain**: installing downloads the watcher built for your platform and checks
-it against its published checksum. See [requires](#requires).
+Needs Herdr 0.9.0 or newer. The watcher runs as a `[[startup]]` command, which
+0.9.0 provides. **No Rust toolchain**: installing downloads the watcher built
+for your platform and checks it against its published checksum. See
+[requires](#requires).
 
 ### Installing is not enough on its own — restart the server
 
