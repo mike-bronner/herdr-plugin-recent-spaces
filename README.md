@@ -372,6 +372,36 @@ dwell = 10
 pin = "~"
 ```
 
+### `dwell`: how long focus must rest
+
+`dwell` is the seconds focus must rest in one workspace before that workspace is
+promoted. The default is 10.
+
+The watcher asks Herdr which workspace has focus every two seconds. A promotion
+therefore lands between the dwell and the dwell plus two seconds. No dwell
+promotes faster than one poll, because that is how often the watcher looks.
+
+Raise it to ignore more of your moving around. Lower it to reorder sooner.
+
+A value that is not a number of seconds is reported on stderr. The dwell then
+falls back to 10.
+
+### `pin`: the space held at the top
+
+`pin` is the label of the workspace held at index 0, at the very top. The default
+is `~`, the label Herdr gives the home workspace.
+
+The pin is checked on every poll. Anything that displaces it is undone within two
+seconds. It is never promoted itself, however long focus rests in it. Every
+promotion lands at index 1. A promotion therefore never pushes the pin down.
+
+The label is matched exactly. Set it to another workspace's label to hold that
+workspace instead.
+
+Set `pin` to a label no workspace carries to turn pinning off. Nothing is then
+held at the top. Promotions still go to index 1. Index 0 is left to whatever
+Herdr put there.
+
 ### The `.env` file
 
 The same two settings can also be written as environment variables in a `.env`
@@ -413,10 +443,6 @@ that is not a number of seconds, a key the plugin has no setting for, and a file
 that does not parse are each reported on stderr and then ignored: this plugin
 holds a slot in Herdr's plugin pool for the whole session, so a typo in optional
 config must never be what stops the sidebar reordering.
-
-Set `pin` to a label no workspace carries to turn pinning off. Nothing is then
-held at the top, and promotions still go to index 1, leaving index 0 to whatever
-Herdr put there.
 
 Settings are read once, when the server starts the watcher, so a change to any of
 them needs a server restart like the `[[startup]]` entry itself.
