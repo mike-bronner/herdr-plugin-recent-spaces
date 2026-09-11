@@ -212,8 +212,8 @@ sh bin/watch --version
 ```
 
 ```
-watch 0.5.0 (e9e9f44, built 2026-09-10T17:28:48Z)
-manifest 0.5.0 at /Users/you/Developer/herdr-plugin-recent-spaces/herdr-plugin.toml
+watch 0.6.0 (3d0715d, built 2026-09-10T23:55:59Z)
+manifest 0.6.0 at /Users/you/Developer/herdr-plugin-recent-spaces/herdr-plugin.toml
 ```
 
 Two versions, each labelled with where it came from. The first is compiled into
@@ -222,7 +222,7 @@ which is the copy Herdr itself reads. When they disagree the binary says so in a
 third line rather than leaving you to compare two numbers:
 
 ```
-STALE: this binary is 0.5.0 but the manifest is 0.5.1. Rebuild it with `cargo build --release`.
+STALE: this binary is 0.6.0 but the manifest is 0.6.1. Rebuild it with `cargo build --release`.
 ```
 
 **The remedy follows where the binary came from, because the two readers can do
@@ -231,7 +231,7 @@ source beside it. A downloaded one belongs to a release, and whoever installed i
 has no toolchain to rebuild with, so it is told the thing that works for them:
 
 ```
-STALE: this binary is 0.5.0 but the manifest is 0.5.1. This binary was downloaded, so reinstall the plugin to get the 0.5.1 binary.
+STALE: this binary is 0.6.0 but the manifest is 0.6.1. This binary was downloaded, so reinstall the plugin to get the 0.6.1 binary.
 ```
 
 The note beside a downloaded binary is what tells the two apart, and it is the
