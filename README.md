@@ -42,11 +42,15 @@ the Herdr it was written against: it drove 926 promotions in the week to
 herdr plugin install mike-bronner/herdr-plugin-recent-spaces
 ```
 
-Pin a particular revision with `--ref`:
+Pin a particular revision with `--ref`, naming a tag from
+[Releases](https://github.com/mike-bronner/herdr-plugin-recent-spaces/releases):
 
 ```sh
-herdr plugin install mike-bronner/herdr-plugin-recent-spaces --ref v0.5.0
+herdr plugin install mike-bronner/herdr-plugin-recent-spaces --ref vX.Y.Z
 ```
+
+v0.6.0 was the first release to publish binaries. An older tag has none to
+download, so it compiles instead.
 
 To work on the plugin instead, clone it and link the checkout:
 
