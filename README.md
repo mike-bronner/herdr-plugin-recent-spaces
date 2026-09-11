@@ -448,19 +448,6 @@ the process — every failure, including a panic, is counted against the 30-seco
 grace period and then forgiven — and a restart of the Herdr server is the way to
 bring the watcher back after it has gone.
 
-### Upgrading from the Python watcher
-
-Versions up to 0.5.0 shipped `bin/watch-focus`, a Python script. Its claim file
-was keyed differently, so the Rust watcher cannot retire a Python one that is
-still running from an earlier server start. Both promote the focused workspace to
-the same index, so the overlap changes nothing you can see, and the survivor
-leaves on its own the next time Herdr is down for 30 seconds. To be rid of it
-straight away:
-
-```sh
-pkill -f bin/watch-focus
-```
-
 ## Requires
 
 Herdr 0.9.0 or newer, and nothing else on the four platforms listed
