@@ -83,8 +83,8 @@ taken immediately after the restart means nothing.
 
 ### Updating
 
-Herdr v1 has no separate plugin update command. Reinstall from GitHub to refresh
-a managed install:
+Herdr 0.9.0 has no separate plugin update command. Reinstall from GitHub to
+refresh a managed install:
 
 ```sh
 herdr plugin install mike-bronner/herdr-plugin-recent-spaces
@@ -109,7 +109,8 @@ because a release binary cannot contain the change you just made.
 
 ### Installing downloads it
 
-Each release publishes a static binary per platform, with a `.sha256` beside it:
+Every release since v0.6.0 publishes a binary per platform, with a `.sha256`
+beside it:
 
 | Platform | Asset |
 | --- | --- |
@@ -117,6 +118,10 @@ Each release publishes a static binary per platform, with a `.sha256` beside it:
 | macOS, Intel | `watch-x86_64-apple-darwin` |
 | Linux, arm64 | `watch-aarch64-unknown-linux-musl` |
 | Linux, x86_64 | `watch-x86_64-unknown-linux-musl` |
+
+The two Linux binaries are static musl builds, so either one runs on glibc and
+musl alike. The macOS binaries are not static. Each links
+`/usr/lib/libSystem.B.dylib`, which every macOS carries.
 
 `herdr plugin install` reads no release metadata at all — it fetches a git ref and
 runs the build step — so `bin/build` composes the URL itself, from the repository
@@ -168,10 +173,13 @@ binary's own directory to the `PATH` it builds under. `bin/find-cargo` looks on
 the `PATH` first, then at `$CARGO`, `$CARGO_HOME/bin/cargo`,
 `~/.cargo/bin/cargo`, and the usual Homebrew rustup and `/usr/local` locations.
 
-When cargo is missing but a binary is already there, the shim runs that binary
-and says on stderr that it may be stale. When there is neither, it stops and says
-how to install a toolchain. A `[[startup]]` command has no terminal, so stderr
-and `herdr plugin log` are the only places any of these messages can appear.
+When `bin/build` cannot produce a binary and one is already there, the shim runs
+that one. It says on stderr that the binary may be stale. Missing cargo alone no
+longer reaches that case, because a verified download answers it. When there is
+no binary either, the shim stops. A failed compile then reports what cargo said.
+A machine with no toolchain is told how to install one. A `[[startup]]` command
+has no terminal, so stderr and `herdr plugin log` are the only places any of
+these messages can appear.
 
 ### How the shim tells the two apart
 
@@ -260,12 +268,13 @@ build step fails and installs no toolchains.
 
 Nothing on this path can fail. A manifest that is missing, unreadable, unparseable
 or simply without a `version` key is named as such on the second line, and the
-binary still exits 0. Those four cases stay distinct on purpose: a manifest that
-parsed perfectly and only lacks the key reads `manifest has no version key at
-<path>`, because reporting it as a syntax error sends you looking for a fault that
-is not there. It also finds its own checkout when `HERDR_PLUGIN_ROOT` is unset, so
-running the binary directly from a shell answers the same as running it through
-the shim.
+binary still exits 0. A missing manifest and an unreadable one read the same,
+because neither could be opened. The other two stay distinct on purpose: a
+manifest that parsed perfectly and only lacks the key reads `manifest has no
+version key at <path>`, because reporting it as a syntax error sends you looking
+for a fault that is not there. It also finds its own checkout when
+`HERDR_PLUGIN_ROOT` is unset, so running the binary directly from a shell answers
+the same as running it through the shim.
 
 ### What the watcher accepts on the command line
 
@@ -476,7 +485,13 @@ cargo test
 The suite runs the watcher against a stub Herdr server over a real Unix socket,
 so what is checked is the requests it does and does not send. The dwell clock,
 the poll interval and the 30-second grace period are driven by injected clocks
-rather than by waiting, so the whole suite takes well under a second.
+rather than by waiting, so those tests finish in hundredths of a second.
+
+`cargo test` as a whole takes about twenty seconds. `tests/version.rs` is nearly
+all of it. That file runs `cargo build --release` in a temporary checkout
+seventeen times. The build stamp and the `-dirty` marker come from `build.rs`, so
+checking either one means building. It also waits past four second boundaries, to
+tell a re-stamped binary from one that was not rebuilt.
 
 `herdr-plugin.toml` is parsed for real, because Herdr re-reads that file at
 dispatch time and a syntax error in it stops the plugin silently, with no toast
