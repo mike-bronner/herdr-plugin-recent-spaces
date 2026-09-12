@@ -29,6 +29,6 @@ permissions:
 
 jobs:
   release:
-    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-release.yml@0.1.0
+    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-release.yml@0.2.0
     permissions:
       contents: write

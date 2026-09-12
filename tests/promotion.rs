@@ -1,7 +1,8 @@
 mod support;
 
 use herdr_plugin_kit::api::client::{CallError, Client, Socket};
-use recent_spaces::promote::{hold_pin, tick, Dwell};
+use recent_spaces::promote::{hold_pin, tick, workspace_move, workspaces, Dwell};
+use serde_json::json;
 use support::*;
 
 fn refusal_code(error: CallError) -> Option<String> {
@@ -56,6 +57,18 @@ fn a_refused_pin_move_is_reported_rather_than_swallowed() {
     assert_eq!(
         failed.err().and_then(refusal_code).as_deref(),
         Some("workspace_not_found")
+    );
+}
+
+#[test]
+fn a_move_answered_with_anything_but_the_sidebar_is_refused() {
+    let stub = Stub::start(Script::default().answering("workspace.move", json!({"type": "ok"})));
+    let refused = workspace_move(&stub.client(), "w1", 0);
+    assert!(
+        matches!(refused, Err(CallError::Protocol(_))),
+        "`ok` is a shape Herdr can send and is not the sidebar this call names, \
+         and the answer is discarded, so nothing else would notice: {:?}",
+        refused
     );
 }
 
@@ -238,4 +251,16 @@ fn a_refused_workspace_list_is_reported_rather_than_read_as_no_workspaces() {
     let stub = Stub::start(Script::default().failing("workspace.list", "internal_error"));
     let mut dwell = settled("w3", 100.0);
     assert!(tick(&stub.client(), &settings(10.0, "~"), &mut dwell, 200.0).is_err());
+}
+
+#[test]
+fn a_list_answered_with_anything_but_the_sidebar_is_refused() {
+    let stub = Stub::start(Script::default().answering("workspace.list", json!({"type": "ok"})));
+    let refused = workspaces(&stub.client());
+    assert!(
+        matches!(refused, Err(CallError::Protocol(_))),
+        "an answer of the wrong shape says nothing about the sidebar, so reading \
+         it as an empty one would retire the pin and promote nothing: {:?}",
+        refused
+    );
 }

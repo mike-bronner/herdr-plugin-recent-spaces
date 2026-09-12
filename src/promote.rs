@@ -1,6 +1,6 @@
 use herdr_plugin_kit::api::client::{CallError, Client};
 use herdr_plugin_kit::api::generated::{
-    EmptyParams, RequestMethod, ResponseResult, WorkspaceInfo, WorkspaceMoveParams,
+    EmptyParams, RequestMethod, WorkspaceInfo, WorkspaceListAnswer, WorkspaceMoveParams,
 };
 
 use crate::config::Settings;
@@ -10,15 +10,11 @@ pub const PROMOTE_INDEX: u32 = 1;
 pub const PIN_INDEX: u32 = 0;
 
 pub fn workspaces(client: &Client) -> Result<Vec<WorkspaceInfo>, CallError> {
-    match client.call(RequestMethod::WorkspaceList(EmptyParams(
-        serde_json::Map::new(),
-    )))? {
-        ResponseResult::WorkspaceList { workspaces } => Ok(workspaces),
-        other => Err(CallError::Protocol(format!(
-            "workspace.list answered {:?}, which is not a list of workspaces",
-            other
-        ))),
-    }
+    client
+        .call::<WorkspaceListAnswer>(RequestMethod::WorkspaceList(EmptyParams(
+            serde_json::Map::new(),
+        )))
+        .map(|answer| answer.workspaces)
 }
 
 pub fn workspace_move(
@@ -27,7 +23,7 @@ pub fn workspace_move(
     insert_index: u32,
 ) -> Result<(), CallError> {
     client
-        .call(RequestMethod::WorkspaceMove(WorkspaceMoveParams {
+        .call::<WorkspaceListAnswer>(RequestMethod::WorkspaceMove(WorkspaceMoveParams {
             insert_index,
             workspace_id: workspace_id.to_string(),
         }))

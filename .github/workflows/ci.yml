@@ -26,6 +26,6 @@ jobs:
     # name or a toolchain version would each repeat a fact the manifests already
     # state, and an input that disagrees with a manifest publishes one asset
     # name while every install requests another.
-    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-ci.yml@0.1.0
+    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-ci.yml@0.2.0
     with:
       test_os: macos-latest

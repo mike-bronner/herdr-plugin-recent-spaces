@@ -454,6 +454,44 @@ The socket is the only way in for this plugin either way: `herdr workspace` offe
 a code: a workspace Herdr refuses to move can be told apart from a server that has
 gone away, without matching a phrase on stderr.
 
+### Both calls name one result type, not the union of all 64
+
+The kit's `ResponseResult` is one enum carrying every shape Herdr can answer
+with, and a caller that names it pays for every one: serde emits parsing code per
+variant, and all of them stay reachable through the single type, so the linker
+drops none. Beside it the kit generates a result type per variant. Both calls
+here name `WorkspaceListAnswer`, which is the tag and the workspaces and nothing
+else.
+
+Both name the same one, and that is not an oversight. `workspace.move` is
+answered with the sidebar after the move, and there is no moved-shaped result
+type at all. That was measured against a live server, and it is written down in
+[`docs/herdr-behaviour.md`](docs/herdr-behaviour.md).
+
+**Measured 2026-09-12 on macOS arm64**, at this crate's release profile of
+`opt-level = "s"` with `strip = true`, building the same tree three ways:
+
+| What the two calls name | Stripped `watch` |
+| --- | --- |
+| `ResponseResult`, on kit 0.1.0 | 3,257,600 bytes |
+| `ResponseResult`, on kit 0.2.0 | 3,350,544 bytes |
+| `WorkspaceListAnswer`, on kit 0.2.0 | 1,878,832 bytes |
+
+Naming the narrow type is worth 1,471,712 bytes, which is 43.9% of the binary it
+was cut from. Taking kit 0.2.0 and keeping the union would have *added* 92,944
+bytes, so the version bump on its own is a loss and the narrow type is the whole
+of the win. Against the binary this work started from, the two together are worth
+1,378,768 bytes, or 42.3%.
+
+The 0.1.0 figure was recorded as 3,257,616 bytes the day before. The same commit
+builds at 3,257,600 here on the same machine and the same profile, and the 16
+bytes are unexplained. A dirty build stamp was ruled out by measuring one. Both
+readings are of the union, so nothing above turns on which is right.
+
+`regress` survives all of this, and it was expected to. A workspace row carries
+`tokens`, whose keys are pattern-constrained, so the regex engine arrives with
+the one variant this plugin does read. The saving is the other 63.
+
 ## Configure
 
 Every setting is optional. They are written as TOML, in the plugin's

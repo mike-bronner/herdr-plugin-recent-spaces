@@ -356,7 +356,7 @@ fn pinned_ref(reference: &str) -> String {
 fn ci_calls_the_kit_and_keeps_no_gate_of_its_own() {
     assert_eq!(
         called_workflows(CI_WORKFLOW),
-        vec![format!("{}/.github/workflows/plugin-ci.yml@0.1.0", KIT)],
+        vec![format!("{}/.github/workflows/plugin-ci.yml@0.2.0", KIT)],
         "a second copy of the gates here would be one more thing to keep in step \
          with the kit, and it could not be tested from this repository"
     );
@@ -401,7 +401,7 @@ fn the_release_caller_grants_the_permission_the_called_workflow_cannot_raise() {
     assert_eq!(
         called_workflows(RELEASE_WORKFLOW),
         vec![format!(
-            "{}/.github/workflows/plugin-release.yml@0.1.0",
+            "{}/.github/workflows/plugin-release.yml@0.2.0",
             KIT
         )],
         "the kit is the one place that publishes, and it is what refuses the wrong \

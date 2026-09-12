@@ -111,6 +111,7 @@ pub fn settings(dwell: f64, pin: &str) -> Settings {
 pub struct Script {
     pub workspaces: Vec<Value>,
     pub fail: Vec<(String, String)>,
+    pub answer: Vec<(String, Value)>,
     pub protocol: u32,
 }
 
@@ -119,6 +120,7 @@ impl Default for Script {
         Script {
             workspaces: Vec::new(),
             fail: Vec::new(),
+            answer: Vec::new(),
             protocol: GENERATED_PROTOCOL,
         }
     }
@@ -132,6 +134,11 @@ impl Script {
 
     pub fn failing(mut self, method: &str, code: &str) -> Script {
         self.fail.push((method.to_string(), code.to_string()));
+        self
+    }
+
+    pub fn answering(mut self, method: &str, result: Value) -> Script {
+        self.answer.push((method.to_string(), result));
         self
     }
 
@@ -252,6 +259,9 @@ fn answer_for(method: &str, script: &Script, id: &Value) -> Value {
 
     if let Some((_, code)) = script.fail.iter().find(|(m, _)| m == method) {
         return fail(code);
+    }
+    if let Some((_, result)) = script.answer.iter().find(|(m, _)| m == method) {
+        return ok(result.clone());
     }
 
     match method {

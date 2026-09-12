@@ -104,10 +104,17 @@ stood up by the recipe above, with three workspaces created through
 workspaces before they were made, `plugin.list` returned none at all, and the
 live `~/.config/herdr/plugins.json` was byte-identical by sha256 afterwards.
 
-It matters because the answers are typed now. The generated `ResponseResult` is
-closed on its `type` field, so an answer carrying a discriminator this build does
-not know is refused rather than ignored, and a plugin that guesses wrong stops
-working the first time it calls.
+It matters because the answers are typed, and because this plugin names the one
+type it reads. The kit generates a result type per response variant beside
+`ResponseResult`, which is a single enum carrying all 64 shapes Herdr can answer
+with. A caller naming the union pays for all 64: serde emits parsing code per
+variant, and every one stays reachable through the one type, so nothing can drop
+them. Both calls here name `WorkspaceListAnswer`, which carries a one-variant
+`type` tag and the workspaces. An answer of any other shape is refused rather
+than ignored, so a plugin that guesses wrong stops working the first time it
+calls. What that is worth in bytes is measured in the README, under
+[Both calls name one result
+type](../README.md#both-calls-name-one-result-type-not-the-union-of-all-64).
 
 ### `workspace.move` is answered with the whole sidebar
 
@@ -126,7 +133,8 @@ order `w1, w2, w3`, moving `w3` to index 0 was answered with `w3, w1, w2`, and a
 fresh `workspace.list` immediately after read the same three in the same order.
 
 This plugin drops them anyway: the next poll is two seconds away, and focus may
-have moved by then.
+have moved by then. It names the result type all the same, so an answer that is
+not the sidebar is now a protocol error instead of a silent success.
 
 ### `workspace.list` rows carry more than this plugin reads
 
