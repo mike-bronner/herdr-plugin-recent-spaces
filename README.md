@@ -469,19 +469,29 @@ type at all. That was measured against a live server, and it is written down in
 [`docs/herdr-behaviour.md`](docs/herdr-behaviour.md).
 
 **Measured 2026-09-12 on macOS arm64**, at this crate's release profile of
-`opt-level = "s"` with `strip = true`, building the same tree three ways:
+`opt-level = "s"` with `strip = true`, building the same tree four ways:
 
 | What the two calls name | Stripped `watch` |
 | --- | --- |
 | `ResponseResult`, on kit 0.1.0 | 3,257,600 bytes |
 | `ResponseResult`, on kit 0.2.0 | 3,350,544 bytes |
 | `WorkspaceListAnswer`, on kit 0.2.0 | 1,878,832 bytes |
+| `WorkspaceListAnswer`, on kit 0.3.0 | 1,878,800 bytes |
 
 Naming the narrow type is worth 1,471,712 bytes, which is 43.9% of the binary it
 was cut from. Taking kit 0.2.0 and keeping the union would have *added* 92,944
 bytes, so the version bump on its own is a loss and the narrow type is the whole
 of the win. Against the binary this work started from, the two together are worth
 1,378,768 bytes, or 42.3%.
+
+Kit 0.3.0 widens every fractional number in the generated types from `f32` to
+`f64`, and it reaches nothing here. Every field it widens is named `ratio` or
+`amount`, and every one of those sits on a layout or a pane type. This plugin
+names only `Workspace` types, so none of the widened fields link. The binary
+moved 32 bytes, and it moved *down*, which is the wrong direction for a widening
+that had reached it. Two clean release builds on this machine each read
+1,878,800 exactly, so the 32 bytes are reproducible rather than build noise, and
+they are unexplained in the same way the 16 below are.
 
 The 0.1.0 figure was recorded as 3,257,616 bytes the day before. The same commit
 builds at 3,257,600 here on the same machine and the same profile, and the 16
