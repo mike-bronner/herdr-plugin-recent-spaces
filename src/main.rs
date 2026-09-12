@@ -1,12 +1,15 @@
 use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use recent_spaces::api::{self, Client};
+use herdr_plugin_kit::api::client::{Client, Socket};
+use herdr_plugin_kit::env::Environment;
 use recent_spaces::claim::FileClaim;
-use recent_spaces::config::{self, Environment};
+use recent_spaces::config;
 use recent_spaces::promote::{self, Dwell};
 use recent_spaces::retire;
 use recent_spaces::version;
+
+const PLUGIN_ID: &str = "mikebronner.recent-spaces";
 
 fn main() {
     match version::requested(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
@@ -22,11 +25,9 @@ fn main() {
 
 fn report_the_build() {
     let env = Environment::from_process();
-    let manifest = version::read_manifest(version::root_of(&env).as_deref());
-    let origin = version::origin_of(std::env::current_exe().ok());
     print!(
         "{}",
-        version::report(env!("CARGO_BIN_NAME"), &manifest, origin)
+        herdr_plugin_kit::version_report!(env!("CARGO_BIN_NAME"), &env)
     );
 }
 
@@ -53,9 +54,14 @@ fn run() {
         note(complaint);
     }
 
-    let socket = api::socket_path(&env);
-    let client = Client::new(socket.clone());
-    let claim = FileClaim::new(&config::state_dir(&env), &socket);
+    let socket = match Socket::resolve(&env) {
+        Ok(socket) => socket,
+        Err(nothing) => return note(&nothing.to_string()),
+    };
+    let claim = FileClaim::new(&config::state_dir(&env), socket.path());
+    let client = Client::new(socket, PLUGIN_ID);
+    greet(&client);
+
     let mut dwell = Dwell::new();
     let started = Instant::now();
 
@@ -66,6 +72,20 @@ fn run() {
         || started.elapsed().as_secs_f64(),
         |seconds| std::thread::sleep(Duration::from_secs_f64(seconds)),
     );
+}
+
+fn greet(client: &Client) {
+    match client.ping() {
+        Ok(handshake) => {
+            if let Some(mismatch) = handshake.mismatch() {
+                note(&mismatch.to_string());
+            }
+        }
+        Err(unanswered) => note(&format!(
+            "herdr did not answer the opening ping, so the protocol went unchecked: {}",
+            unanswered
+        )),
+    }
 }
 
 fn token() -> String {

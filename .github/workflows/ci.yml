@@ -1,41 +1,31 @@
 name: CI
 
-# Runs the three gates local verification runs, on every push and every pull
-# request: the suite, the formatting, and clippy with warnings denied. A gate
-# weaker than what a developer runs by hand is not a gate.
+# A caller, and nothing more. Every gate lives in herdr-plugin-kit's reusable
+# workflow, pinned at the same tag Cargo.toml pins the crate to, so bumping one
+# ref moves every plugin's checks together.
 #
-# Every gate is its own step and nothing reads its output. A step fails the job
-# on a non-zero exit status, and that is the only thing judged here. Two defects
-# on this plugin reached a branch because a check read result lines instead of an
-# exit status, and a job doing the same would manufacture confidence rather than
-# earn it.
+# What it runs: the shims still match the kit's templates, the versions and the
+# tag form agree, then the suite, the formatting and clippy with warnings
+# denied, then all six release targets compile.
 #
-# macOS is not a preference. The suite writes its temporary directories under
-# /private/tmp, which exists on macOS and not on Linux, so a Linux runner cannot
-# run this suite at all. The label is the one the release workflow already
-# builds on.
+# 🪤 Both triggers. When a pull request cannot compute a merge ref against main,
+# Actions skips its pull_request workflows entirely — no run, no error, and the
+# checks never appear. The push trigger keeps a conflicted branch covered.
 
 on:
   push:
   pull_request:
 
 jobs:
-  gates:
-    name: Suite, formatting and clippy
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Run the suite
-        run: cargo test
-
-      - name: Check the formatting
-        run: cargo fmt --check
-
-      - name: Check clippy with warnings denied
-        run: cargo clippy --all-targets -- -D warnings
+  checks:
+    # macOS is not a preference. The suite writes its temporary directories
+    # under /private/tmp, which exists on macOS and not on Linux, so a Linux
+    # runner cannot run this suite at all.
+    #
+    # 🔑 It is the only input, and the only one there is. A crate name, a binary
+    # name or a toolchain version would each repeat a fact the manifests already
+    # state, and an input that disagrees with a manifest publishes one asset
+    # name while every install requests another.
+    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-ci.yml@0.1.0
+    with:
+      test_os: macos-latest

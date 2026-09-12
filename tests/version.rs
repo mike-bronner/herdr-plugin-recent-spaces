@@ -4,9 +4,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use recent_spaces::version::{
-    self, Manifest, Origin, Request, BUILT, COMMIT, CRATE_VERSION, DOWNLOAD_NOTE, UNKNOWN_COMMIT,
-};
+use herdr_plugin_kit::api::generated::GENERATED_PROTOCOL;
+use herdr_plugin_kit::version::{PROVENANCE_SUFFIX, UNKNOWN};
+use recent_spaces::version::{requested, Request};
 use support::*;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_watch");
@@ -93,6 +93,10 @@ fn manifest_of(report: &str) -> String {
     report.lines().nth(1).unwrap().to_string()
 }
 
+fn provenance_of_report(report: &str) -> String {
+    report.lines().nth(2).unwrap().to_string()
+}
+
 fn in_parentheses(header: &str) -> String {
     let opened = header.find('(').expect(header) + 1;
     let closed = header.rfind(')').expect(header);
@@ -176,116 +180,37 @@ fn the_binary_finds_its_own_checkout_with_no_herdr_anywhere_in_the_environment()
 }
 
 #[test]
+fn the_report_says_how_the_binary_arrived() {
+    let run = run_version(&[]);
+    assert_eq!(
+        provenance_of_report(&run.stdout),
+        "built from source on this machine",
+        "a compiled binary has no note beside it, and the line is unconditional \
+         so that its absence cannot be read as either answer: {}",
+        run.stdout
+    );
+}
+
+#[test]
 fn two_agreeing_versions_are_reported_without_a_verdict() {
     let run = run_version(&[]);
     assert_eq!(CRATE_VERSION, manifest_version(), "a test enforces this");
-    assert_eq!(run.stdout.lines().count(), 2, "{}", run.stdout);
+    assert_eq!(run.stdout.lines().count(), 3, "{}", run.stdout);
     assert!(!run.stdout.contains("STALE"), "{}", run.stdout);
 }
 
-#[test]
-fn a_manifest_it_cannot_read_is_named_rather_than_guessed_at() {
-    let dir = TempDir::new();
-    let report = version::report(
-        "watch",
-        &Manifest::Unreadable(dir.join("herdr-plugin.toml")),
-        Origin::Compiled,
-    );
-    assert_eq!(
-        manifest_of(&report),
-        format!(
-            "manifest unreadable at {}",
-            dir.join("herdr-plugin.toml").display()
-        )
-    );
-    assert!(!report.contains("STALE"), "{}", report);
-}
-
-#[test]
-fn a_manifest_with_no_version_key_is_told_apart_from_one_that_will_not_parse() {
-    let dir = TempDir::new();
-    let report = version::report(
-        "watch",
-        &Manifest::NoVersion(dir.join("herdr-plugin.toml")),
-        Origin::Compiled,
-    );
-    assert_eq!(
-        manifest_of(&report),
-        format!(
-            "manifest has no version key at {}",
-            dir.join("herdr-plugin.toml").display()
-        )
-    );
-    assert_eq!(report.lines().count(), 2, "{}", report);
-    assert!(!report.contains("unparsed"), "{}", report);
-    assert!(!report.contains("STALE"), "{}", report);
-}
-
-#[test]
-fn with_no_plugin_root_the_manifest_line_says_how_to_point_at_one() {
-    let report = version::report("watch", &Manifest::NoRoot, Origin::Compiled);
-    assert_eq!(
-        manifest_of(&report),
-        "manifest not found: set HERDR_PLUGIN_ROOT to the plugin checkout to read it"
-    );
-    assert_eq!(report.lines().count(), 2, "{}", report);
-}
-
-fn found(version: &str) -> Manifest {
-    Manifest::Found {
-        version: version.to_string(),
-        path: PathBuf::from("/p/herdr-plugin.toml"),
-    }
-}
-
 fn verdict_of(report: &str) -> String {
-    report.lines().nth(2).unwrap().to_string()
+    report.lines().nth(3).unwrap().to_string()
 }
 
-#[test]
-fn the_stale_verdict_names_both_versions_and_tells_a_compiled_binary_to_rebuild() {
-    let report = version::report("watch", &found("9.9.9"), Origin::Compiled);
-    assert_eq!(report.lines().count(), 3, "{}", report);
-    assert_eq!(verdict_of(&report), rebuild_verdict("9.9.9"));
-}
+const FETCHED_ASSET: &str = "recent-spaces-macos-arm64";
+const FETCHED_URL: &str = "https://example.test/releases/download/v9.9.9/recent-spaces-macos-arm64";
 
-#[test]
-fn a_downloaded_binary_is_told_to_reinstall_rather_than_to_rebuild() {
-    let report = version::report("watch", &found("9.9.9"), Origin::Downloaded);
-    assert_eq!(report.lines().count(), 3, "{}", report);
-    assert_eq!(verdict_of(&report), reinstall_verdict("9.9.9"));
-    assert!(
-        !report.contains("cargo"),
-        "whoever installed a published binary has no toolchain, so a rebuild is \
-         not an instruction they can follow: {}",
-        report
-    );
-}
-
-#[test]
-fn a_note_beside_the_binary_is_what_tells_a_download_from_a_compile() {
-    let dir = TempDir::new();
-    let binary = dir.write("watch", "");
-    assert_eq!(version::origin_of(Some(binary.clone())), Origin::Compiled);
-
-    let note = dir.write(&format!("watch{}", DOWNLOAD_NOTE), "version=9.9.9\n");
-    assert_eq!(version::origin_of(Some(binary.clone())), Origin::Downloaded);
-
-    std::fs::remove_file(&note).unwrap();
-    std::fs::create_dir(&note).unwrap();
-    assert_eq!(
-        version::origin_of(Some(binary)),
-        Origin::Compiled,
-        "the shim asks `[ -f ]` of this path, so a directory of that name is not a \
-         note to either of them"
-    );
-
-    assert_eq!(
-        version::origin_of(None),
-        Origin::Compiled,
-        "a binary that cannot find itself reads as compiled, which is what the shim \
-         assumes when no note is there"
-    );
+fn fetch_note() -> String {
+    format!(
+        "version=9.9.9\nasset={}\nsha256=0000\nurl={}\n",
+        FETCHED_ASSET, FETCHED_URL
+    )
 }
 
 #[test]
@@ -302,8 +227,8 @@ fn the_remedy_a_running_binary_prints_follows_where_that_binary_came_from() {
     assert_eq!(verdict_of(&compiled.stdout), rebuild_verdict("9.9.9"));
 
     std::fs::write(
-        placed.with_file_name(format!("watch{}", DOWNLOAD_NOTE)),
-        "version=9.9.8\n",
+        placed.with_file_name(format!("watch{}", PROVENANCE_SUFFIX)),
+        fetch_note(),
     )
     .unwrap();
     let downloaded = ask(&placed, &env);
@@ -314,41 +239,23 @@ fn the_remedy_a_running_binary_prints_follows_where_that_binary_came_from() {
         "the same binary must answer for the note beside it rather than for how it \
          was built"
     );
-}
-
-#[test]
-fn reading_a_manifest_tells_the_failures_apart() {
-    let dir = TempDir::new();
-    assert_eq!(version::read_manifest(None), Manifest::NoRoot);
     assert_eq!(
-        version::read_manifest(Some(dir.path())),
-        Manifest::Unreadable(dir.join("herdr-plugin.toml"))
-    );
-
-    dir.write("herdr-plugin.toml", "version = \"unterminated\n");
-    assert_eq!(
-        version::read_manifest(Some(dir.path())),
-        Manifest::Unparsed(dir.join("herdr-plugin.toml"))
-    );
-
-    dir.write("herdr-plugin.toml", "id = \"x\"\n");
-    assert_eq!(
-        version::read_manifest(Some(dir.path())),
-        Manifest::NoVersion(dir.join("herdr-plugin.toml")),
-        "this manifest parsed, so calling it unparsed names a fault that is not there"
-    );
-
-    dir.write("herdr-plugin.toml", "version = \"1.2.3\"\n");
-    assert_eq!(
-        version::read_manifest(Some(dir.path())),
-        Manifest::Found {
-            version: "1.2.3".to_string(),
-            path: dir.join("herdr-plugin.toml")
-        }
+        provenance_of_report(&downloaded.stdout),
+        format!("fetched {} from {}", FETCHED_ASSET, FETCHED_URL),
+        "{}",
+        downloaded.stdout
     );
 }
 
-const COMPILED_FROM: [&str; 4] = ["src", "build.rs", "Cargo.toml", "Cargo.lock"];
+const COMPILED_FROM: [&str; 7] = [
+    "src",
+    "build.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    ".cargo",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+];
 
 #[test]
 fn the_commit_carries_the_state_of_the_tree_it_was_built_from() {
@@ -363,7 +270,7 @@ fn the_commit_carries_the_state_of_the_tree_it_was_built_from() {
         }
         (Some(head), Some(_)) => assert_eq!(COMMIT, format!("{}-dirty", head), "{}", because),
         (Some(head), None) => assert_eq!(COMMIT, format!("{}-unverified", head)),
-        (None, _) => assert_eq!(COMMIT, UNKNOWN_COMMIT),
+        (None, _) => assert_eq!(COMMIT, UNKNOWN),
     }
 }
 
@@ -429,8 +336,8 @@ fn an_argument_after_the_flag_is_refused_instead_of_being_dropped() {
 #[test]
 fn the_argument_grammar_accepts_nothing_but_the_flag_on_its_own() {
     let given = |all: &[&str]| -> Vec<OsString> { all.iter().map(OsString::from).collect() };
-    assert_eq!(version::requested(&given(&[])), Request::Watch);
-    assert_eq!(version::requested(&given(&["--version"])), Request::Report);
+    assert_eq!(requested(&given(&[])), Request::Watch);
+    assert_eq!(requested(&given(&["--version"])), Request::Report);
     for (arguments, named) in [
         (vec!["--help"], "--help"),
         (vec!["--Version"], "--Version"),
@@ -440,7 +347,7 @@ fn the_argument_grammar_accepts_nothing_but_the_flag_on_its_own() {
         (vec!["stray", "--version"], "stray"),
     ] {
         assert_eq!(
-            version::requested(&given(&arguments)),
+            requested(&given(&arguments)),
             Request::Refuse(named.to_string()),
             "{:?}",
             arguments
@@ -452,56 +359,145 @@ fn the_argument_grammar_accepts_nothing_but_the_flag_on_its_own() {
 fn an_argument_that_is_not_text_is_refused_rather_than_fatal() {
     use std::os::unix::ffi::OsStringExt;
     let raw = OsString::from_vec(vec![0x2d, 0x2d, 0xff, 0xfe]);
-    assert!(matches!(version::requested(&[raw]), Request::Refuse(_)));
+    assert!(matches!(requested(&[raw]), Request::Refuse(_)));
 }
 
-struct Running(std::process::Child);
+struct Running(Option<std::process::Child>);
+
+impl Running {
+    fn start(socket: &Path, state: &Path) -> Running {
+        Running(Some(
+            Command::new(BINARY)
+                .env_clear()
+                .env("PATH", LAUNCHD_PATH)
+                .env("HOME", "/private/tmp")
+                .env("HERDR_SOCKET_PATH", socket)
+                .env("HERDR_PLUGIN_STATE_DIR", state)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("cannot run the watcher"),
+        ))
+    }
+
+    fn still_running(&mut self) -> bool {
+        match self.0.as_mut() {
+            Some(child) => child
+                .try_wait()
+                .expect("cannot check the watcher")
+                .is_none(),
+            None => false,
+        }
+    }
+
+    fn stop(mut self) -> String {
+        let mut child = self.0.take().expect("the watcher was already stopped");
+        let _ = child.kill();
+        let out = child
+            .wait_with_output()
+            .expect("cannot read what the watcher said");
+        String::from_utf8_lossy(&out.stderr).to_string()
+    }
+}
 
 impl Drop for Running {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
+}
+
+fn watch_until(watcher: &mut Running, ready: impl Fn() -> bool, wanted: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready() {
+        assert!(
+            watcher.still_running(),
+            "no argument is how Herdr starts it, so it must watch rather than exit \
+             before {}",
+            wanted
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "it stayed up without ever reaching {}",
+            wanted
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn polled(stub: &Stub) -> bool {
+    stub.methods().contains(&"workspace.list".to_string())
 }
 
 #[test]
 fn with_no_argument_at_all_it_watches_instead_of_answering() {
     let stub = Stub::start(Script::default().open(vec![listed("~", "w1", true)]));
     let state = TempDir::new();
-    let mut watcher = Running(
-        Command::new(BINARY)
-            .env_clear()
-            .env("PATH", LAUNCHD_PATH)
-            .env("HOME", "/private/tmp")
-            .env("HERDR_SOCKET_PATH", stub.socket())
-            .env("HERDR_PLUGIN_STATE_DIR", state.path())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("cannot run the watcher"),
-    );
+    let mut watcher = Running::start(stub.socket(), state.path());
+    watch_until(&mut watcher, || polled(&stub), "workspace.list");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while stub.methods().is_empty() {
-        assert!(
-            watcher
-                .0
-                .try_wait()
-                .expect("cannot check the watcher")
-                .is_none(),
-            "no argument is how Herdr starts it, so it must watch rather than exit"
-        );
-        assert!(
-            std::time::Instant::now() < deadline,
-            "it stayed up without ever reaching the socket"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    assert_eq!(
+        watcher.stop(),
+        "",
+        "a server speaking the protocol these types were generated from earns no \
+         warning at all"
+    );
+}
+
+#[test]
+fn a_server_speaking_another_protocol_is_warned_about_and_still_watched() {
+    let stub = Stub::start(
+        Script::default()
+            .open(vec![listed("~", "w1", true)])
+            .speaking(GENERATED_PROTOCOL + 1),
+    );
+    let state = TempDir::new();
+    let mut watcher = Running::start(stub.socket(), state.path());
+
+    watch_until(&mut watcher, || polled(&stub), "workspace.list");
+    let complained = watcher.stop();
+
+    assert_eq!(
+        complained.lines().count(),
+        1,
+        "one line, once, because this is asked once at startup: {}",
+        complained
+    );
+    assert!(
+        complained.contains(&GENERATED_PROTOCOL.to_string())
+            && complained.contains(&(GENERATED_PROTOCOL + 1).to_string()),
+        "the line has to name what was built for and what is being spoken, or its \
+         reader cannot tell which end moved: {}",
+        complained
+    );
+    assert_eq!(
+        stub.methods().first().map(String::as_str),
+        Some("ping"),
+        "the protocol is asked about before anything is done with it: {:?}",
+        stub.methods()
+    );
+}
+
+#[test]
+fn a_server_that_does_not_answer_the_ping_is_said_so_rather_than_passed_over() {
+    let state = TempDir::new();
+    let absent = TempDir::new().join("herdr.sock");
+    let mut watcher = Running::start(&absent, state.path());
+
+    watch_until(
+        &mut watcher,
+        || std::fs::read_dir(state.path()).is_ok_and(|listed| listed.count() > 0),
+        "the claim",
+    );
+    let complained = watcher.stop();
 
     assert!(
-        stub.methods().contains(&"workspace.list".to_string()),
-        "{:?}",
-        stub.methods()
+        complained.contains("the protocol went unchecked"),
+        "a ping that got no answer leaves the protocol unknown, and silence would \
+         read as agreement: {}",
+        complained
     );
 }
 
@@ -627,9 +623,9 @@ fn a_checkout_with_no_git_builds_and_reports_an_unknown_commit() {
 
     let inside = in_parentheses(&header_of(&first));
     let (commit, built) = inside.split_once(", built ").expect(&inside);
-    assert_eq!(commit, UNKNOWN_COMMIT, "{}", first);
+    assert_eq!(commit, UNKNOWN, "{}", first);
     assert!(looks_like_a_timestamp(built), "{}", built);
-    assert_eq!(first.lines().count(), 2, "{}", first);
+    assert_eq!(first.lines().count(), 3, "{}", first);
 
     past_the_next_second();
     let again = build_and_ask(&root, &target);
@@ -660,7 +656,7 @@ fn a_manifest_that_disagrees_with_the_binary_is_diagnosed_at_run_time() {
     let binary = build(&root, &target);
 
     let agreed = ask(&binary, &[("HERDR_PLUGIN_ROOT", root.to_str().unwrap())]);
-    assert_eq!(agreed.stdout.lines().count(), 2, "{}", agreed.stdout);
+    assert_eq!(agreed.stdout.lines().count(), 3, "{}", agreed.stdout);
 
     std::fs::write(root.join("herdr-plugin.toml"), "version = \"9.9.9\"\n").unwrap();
     let stale = ask(&binary, &[("HERDR_PLUGIN_ROOT", root.to_str().unwrap())]);

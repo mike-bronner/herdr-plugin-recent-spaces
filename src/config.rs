@@ -1,6 +1,8 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use herdr_plugin_kit::env::{
+    read_env_file, Environment, PLUGIN_CONFIG_DIR_VAR, PLUGIN_ROOT_VAR, PLUGIN_STATE_DIR_VAR,
+};
 use serde::Deserialize;
 
 pub const DWELL_VAR: &str = "HERDR_RECENT_DWELL";
@@ -8,46 +10,12 @@ pub const PIN_VAR: &str = "HERDR_RECENT_PIN";
 
 pub const RECENT_KEYS: [(&str, &str); 2] = [("recent.dwell", DWELL_VAR), ("recent.pin", PIN_VAR)];
 
-pub const CONFIG_DIR_VAR: &str = "HERDR_PLUGIN_CONFIG_DIR";
-pub const STATE_DIR_VAR: &str = "HERDR_PLUGIN_STATE_DIR";
-pub const PLUGIN_ROOT_VAR: &str = "HERDR_PLUGIN_ROOT";
-
 pub const DEFAULT_DWELL_SECONDS: f64 = 10.0;
 pub const DEFAULT_PIN_LABEL: &str = "~";
 pub const DEFAULT_STATE_DIR: &str = ".config/herdr";
 
-#[derive(Debug, Clone, Default)]
-pub struct Environment {
-    vars: BTreeMap<String, String>,
-}
-
-impl Environment {
-    pub fn from_process() -> Environment {
-        Environment {
-            vars: std::env::vars().collect(),
-        }
-    }
-
-    pub fn from_pairs(pairs: &[(&str, &str)]) -> Environment {
-        Environment {
-            vars: pairs
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-        }
-    }
-
-    pub fn get(&self, key: &str) -> Option<&str> {
-        self.vars.get(key).map(String::as_str)
-    }
-
-    pub fn home(&self) -> PathBuf {
-        PathBuf::from(self.get("HOME").unwrap_or("/"))
-    }
-}
-
 pub fn state_dir(env: &Environment) -> PathBuf {
-    match env.get(STATE_DIR_VAR) {
+    match env.get(PLUGIN_STATE_DIR_VAR) {
         Some(named) if !named.is_empty() => PathBuf::from(named),
         _ => env.home().join(DEFAULT_STATE_DIR),
     }
@@ -61,40 +29,6 @@ pub fn plugin_root(env: &Environment) -> PathBuf {
         .ok()
         .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."))
-}
-
-pub fn parse_env_file(text: &str) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || !line.contains('=') {
-            continue;
-        }
-        let (key, value) = match line.split_once('=') {
-            Some(split) => split,
-            None => continue,
-        };
-        let key = key.trim();
-        let mut value = value.trim().to_string();
-        let quoted: Vec<char> = value.chars().collect();
-        if quoted.len() >= 2
-            && quoted[0] == quoted[quoted.len() - 1]
-            && (quoted[0] == '"' || quoted[0] == '\'')
-        {
-            value = quoted[1..quoted.len() - 1].iter().collect();
-        }
-        if !key.is_empty() {
-            pairs.push((key.to_string(), value));
-        }
-    }
-    pairs
-}
-
-pub fn read_env_file(path: &Path) -> Vec<(String, String)> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => parse_env_file(&text),
-        Err(_) => Vec::new(),
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -155,7 +89,7 @@ pub struct Sources {
 
 pub fn read_sources(env: &Environment, own_root: &Path) -> Sources {
     let dir = env
-        .get(CONFIG_DIR_VAR)
+        .get(PLUGIN_CONFIG_DIR_VAR)
         .filter(|d| !d.is_empty())
         .map(PathBuf::from);
     Sources {

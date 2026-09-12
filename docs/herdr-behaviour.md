@@ -96,6 +96,68 @@ then zero after the server restarted at 2026-09-08 19:41:47 UTC to pick up the
 0.9.0 install from one minute earlier. Every promotion since has been
 API-triggered. The event-driven design was correct when it was written.
 
+## What the two calls are answered with
+
+**Measured 2026-09-11 against Herdr 0.9.0, protocol 22**, in an isolated server
+stood up by the recipe above, with three workspaces created through
+`workspace.create` and nothing else in it. `workspace.list` returned zero
+workspaces before they were made, `plugin.list` returned none at all, and the
+live `~/.config/herdr/plugins.json` was byte-identical by sha256 afterwards.
+
+It matters because the answers are typed now. The generated `ResponseResult` is
+closed on its `type` field, so an answer carrying a discriminator this build does
+not know is refused rather than ignored, and a plugin that guesses wrong stops
+working the first time it calls.
+
+### `workspace.move` is answered with the whole sidebar
+
+```json
+{"id": "...", "result": {"type": "workspace_list", "workspaces": [ ... ]}}
+```
+
+**Not `workspace_moved`, and not `ok`.** `workspace_moved` is the *event* Herdr
+publishes to subscribers, carrying `insert_index`, `workspace_id` and
+`workspaces`. It is no answer to anything, and the stub in this plugin's suite
+answered with it until this was measured — which nothing caught, because the
+watcher discarded the answer without reading it.
+
+The rows in it describe the sidebar **after** the move, not before. With the
+order `w1, w2, w3`, moving `w3` to index 0 was answered with `w3, w1, w2`, and a
+fresh `workspace.list` immediately after read the same three in the same order.
+
+This plugin drops them anyway: the next poll is two seconds away, and focus may
+have moved by then.
+
+### `workspace.list` rows carry more than this plugin reads
+
+Every row carries `workspace_id`, `number`, `label`, `focused`, `pane_count`,
+`tab_count`, `active_tab_id` and `agent_status`. All eight are required, so a
+fixture missing one is not a workspace and never reaches the plugin. This is
+what the old fixtures were missing: they carried no `agent_status`, which cost
+nothing while the answer was read as an untyped value.
+
+`number` follows position rather than identity. After the move above, `w3` was
+`number` 1. It is not an identifier and cannot be used as one.
+
+`worktree` is optional, and absent rather than null on an ordinary workspace.
+**What makes it appear was not established here:** a workspace created with a
+`cwd` inside a git repository did not carry it. All this plugin needs is that
+its absence parses, which is what was measured.
+
+`tokens` was absent on every row.
+
+### `ping` reports the protocol, and that is the only way to learn it moved
+
+```json
+{"id": "...", "result": {"type": "pong", "version": "0.9.0", "protocol": 22,
+                         "capabilities": {"live_handoff": true, ...}}}
+```
+
+Protocol 22 is what the kit's types were generated from, so a 0.9.0 server and
+this build agree. Until the watcher started asking, a wire-format change would
+have arrived as a parse failure somewhere unrelated, with nothing to tell its
+reader that the server had simply moved on.
+
 ## `[[startup]]`
 
 Undocumented, and real. `RawPluginManifest` accepts
@@ -108,7 +170,7 @@ entry carries one key, `command`, an argv array.
 
 ```toml
 [[startup]]
-command = ["sh", "bin/watch"]
+command = ["sh", "bin/launcher"]
 ```
 
 ### When it runs
@@ -195,7 +257,7 @@ a sequence`. The entry carries one key, `command`, an argv array.
 
 ```toml
 [[build]]
-command = ["sh", "bin/build"]
+command = ["sh", "bin/build", "--install"]
 ```
 
 ### It runs during `plugin install`, and at nothing else
@@ -216,9 +278,10 @@ artifact path.** A build step that never runs for a linked checkout, and never
 runs on update, would leave a `git pull` running the old binary forever. A stale
 binary cannot be trusted to notice its own staleness either, because the
 detection logic is part of what changed, so the check has to happen before the
-exec and therefore outside the binary. `bin/watch` compares the mtimes of `src`,
-`Cargo.toml` and `Cargo.lock` against the built binary, rebuilds when any is
-newer, and then execs it.
+exec and therefore outside the binary. `bin/launcher` compares the mtimes of
+everything the compiler reads — `src`, `build.rs`, `Cargo.toml`, `Cargo.lock`,
+`.cargo`, `rust-toolchain` and `rust-toolchain.toml` — against the built binary,
+rebuilds when any is newer or exactly as old, and then execs it.
 
 That mtime comparison is right for a binary compiled from the source beside it
 and wrong for a downloaded one, which belongs to a release instead. On every

@@ -1,21 +1,26 @@
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
-use recent_spaces::api::{Client, Workspace};
+use herdr_plugin_kit::api::client::{Client, Socket};
+use herdr_plugin_kit::api::generated::{WorkspaceInfo, GENERATED_PROTOCOL};
+use herdr_plugin_kit::env::Environment;
 use recent_spaces::claim::Claim;
-use recent_spaces::config::{Environment, Settings};
-use recent_spaces::version::CRATE_VERSION;
+use recent_spaces::config::Settings;
 
 pub const LAUNCHD_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub const COMMIT: &str = env!("HERDR_PLUGIN_COMMIT");
+
+pub const BUILT: &str = env!("HERDR_PLUGIN_BUILT");
 
 pub fn rebuild_verdict(manifest_version: &str) -> String {
     format!(
@@ -26,7 +31,7 @@ pub fn rebuild_verdict(manifest_version: &str) -> String {
 
 pub fn reinstall_verdict(manifest_version: &str) -> String {
     format!(
-        "STALE: this binary is {} but the manifest is {}. This binary was downloaded, so reinstall the plugin to get the {} binary.",
+        "STALE: this binary is {} but the manifest is {}. This binary was fetched, so reinstall the plugin to get the {} binary.",
         CRATE_VERSION, manifest_version, manifest_version
     )
 }
@@ -84,24 +89,14 @@ impl Drop for TempDir {
     }
 }
 
-pub fn set_mtime(path: &Path, when: u64) {
-    use std::time::{Duration, UNIX_EPOCH};
-    let file = std::fs::File::open(path).expect("cannot open the path to stamp it");
-    let times = std::fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(when));
-    file.set_times(times).expect("cannot set the mtime");
-}
-
 pub fn listed(label: &str, id: &str, focused: bool) -> Value {
     json!({"workspace_id": id, "label": label, "focused": focused,
-           "number": 1, "pane_count": 1, "tab_count": 1, "active_tab_id": "t1"})
+           "number": 1, "pane_count": 1, "tab_count": 1, "active_tab_id": "t1",
+           "agent_status": "idle"})
 }
 
-pub fn open(label: &str, id: &str, focused: bool) -> Workspace {
-    Workspace {
-        workspace_id: id.to_string(),
-        label: label.to_string(),
-        focused,
-    }
+pub fn open(label: &str, id: &str, focused: bool) -> WorkspaceInfo {
+    serde_json::from_value(listed(label, id, focused)).expect("the fixture row is not a workspace")
 }
 
 pub fn settings(dwell: f64, pin: &str) -> Settings {
@@ -112,10 +107,21 @@ pub fn settings(dwell: f64, pin: &str) -> Settings {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Script {
     pub workspaces: Vec<Value>,
     pub fail: Vec<(String, String)>,
+    pub protocol: u32,
+}
+
+impl Default for Script {
+    fn default() -> Script {
+        Script {
+            workspaces: Vec::new(),
+            fail: Vec::new(),
+            protocol: GENERATED_PROTOCOL,
+        }
+    }
 }
 
 impl Script {
@@ -126,6 +132,11 @@ impl Script {
 
     pub fn failing(mut self, method: &str, code: &str) -> Script {
         self.fail.push((method.to_string(), code.to_string()));
+        self
+    }
+
+    pub fn speaking(mut self, protocol: u32) -> Script {
+        self.protocol = protocol;
         self
     }
 }
@@ -170,7 +181,7 @@ impl Stub {
     }
 
     pub fn client(&self) -> Client {
-        Client::new(self.socket.to_path_buf())
+        Client::new(Socket::at(&self.socket), "test")
     }
 
     pub fn requests(&self) -> Vec<Value> {
@@ -226,13 +237,13 @@ fn serve(stream: &UnixStream, script: &Script, log: &Arc<Mutex<Vec<Value>>>) {
         .push(json!({"method": method, "params": params}));
 
     let id = request.get("id").cloned().unwrap_or(json!("stub"));
-    let answer = answer_for(&method, &params, script, &id);
+    let answer = answer_for(&method, script, &id);
     let mut out = stream;
     let _ = out.write_all(format!("{}\n", answer).as_bytes());
     let _ = out.flush();
 }
 
-fn answer_for(method: &str, params: &Value, script: &Script, id: &Value) -> Value {
+fn answer_for(method: &str, script: &Script, id: &Value) -> Value {
     let fail = |code: &str| {
         json!({"id": id, "error": {"code": code,
                "message": format!("stub refused {}", method)}})
@@ -244,10 +255,12 @@ fn answer_for(method: &str, params: &Value, script: &Script, id: &Value) -> Valu
     }
 
     match method {
+        "ping" => ok(json!({"type": "pong", "version": "0.9.0",
+                            "protocol": script.protocol})),
         "workspace.list" => ok(json!({"type": "workspace_list",
                                       "workspaces": script.workspaces})),
-        "workspace.move" => ok(json!({"type": "workspace_moved",
-                                      "workspace_id": params.get("workspace_id")})),
+        "workspace.move" => ok(json!({"type": "workspace_list",
+                                      "workspaces": script.workspaces})),
         _ => fail("unhandled_by_stub"),
     }
 }
@@ -334,256 +347,4 @@ pub fn manifest_dir() -> PathBuf {
 pub fn read_repo_file(name: &str) -> String {
     std::fs::read_to_string(manifest_dir().join(name))
         .unwrap_or_else(|_| panic!("cannot read {}", name))
-}
-
-pub fn fake_root(dir: &TempDir, real_build: bool) -> PathBuf {
-    let root = dir.dir("plugin");
-    std::fs::create_dir_all(root.join("bin")).unwrap();
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::create_dir_all(root.join("target/release")).unwrap();
-    std::fs::copy(manifest_dir().join("bin/watch"), root.join("bin/watch")).unwrap();
-    for shared in ["bin/asset-name", "bin/find-cargo"] {
-        std::fs::copy(manifest_dir().join(shared), root.join(shared)).unwrap();
-    }
-    if real_build {
-        std::fs::copy(manifest_dir().join("bin/build"), root.join("bin/build")).unwrap();
-    }
-    std::fs::write(root.join("Cargo.toml"), "").unwrap();
-    std::fs::write(root.join("Cargo.lock"), "").unwrap();
-    std::fs::write(root.join("src/main.rs"), "").unwrap();
-    root
-}
-
-pub fn declare(root: &Path, version: &str, repository: &str) {
-    std::fs::write(
-        root.join("herdr-plugin.toml"),
-        format!(
-            "id = \"probe.fake\"\nmin_herdr_version = \"0.9.0\"\nversion = \"{}\"\n",
-            version
-        ),
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"fake\"\nversion = \"{}\"\nrepository = \"{}\"\n",
-            version, repository
-        ),
-    )
-    .unwrap();
-}
-
-pub fn executable(path: &Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, body).unwrap();
-    let mut perms = std::fs::metadata(path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms).unwrap();
-}
-
-pub fn mode_of(path: &Path) -> u32 {
-    std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(path).unwrap().permissions())
-}
-
-pub struct Shim {
-    pub status: i32,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-pub fn run_script(root: &Path, script: &str, args: &[&str], extra: &[(&str, &str)]) -> Shim {
-    let mut command = Command::new("/bin/sh");
-    command
-        .arg(root.join(script))
-        .args(args)
-        .env_clear()
-        .env("PATH", LAUNCHD_PATH)
-        .env("HOME", "/private/tmp")
-        .env("HERDR_PLUGIN_ROOT", root);
-    for (key, value) in extra {
-        command.env(key, value);
-    }
-    let out = command.output().expect("cannot run the script");
-    Shim {
-        status: out.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-    }
-}
-
-pub fn run_shim(root: &Path, extra: &[(&str, &str)]) -> Shim {
-    run_script(root, "bin/watch", &[], extra)
-}
-
-pub fn run_build(root: &Path, extra: &[(&str, &str)]) -> Shim {
-    run_script(root, "bin/build", &[], extra)
-}
-
-pub fn run_build_args(root: &Path, args: &[&str], extra: &[(&str, &str)]) -> Shim {
-    run_script(root, "bin/build", args, extra)
-}
-
-pub fn fake_cargo(dir: &TempDir, rel: &str, log: &Path) -> PathBuf {
-    let path = dir.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    executable(
-        &path,
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n%s\\n' \"$0\" \"$PATH\" > '{}'\n",
-            log.to_string_lossy()
-        ),
-    );
-    path
-}
-
-pub fn current(root: &Path) {
-    for named in ["src/main.rs", "src", "Cargo.toml", "Cargo.lock"] {
-        set_mtime(&root.join(named), 1000);
-    }
-    set_mtime(&root.join("target/release/watch"), 2000);
-}
-
-pub fn sha256_of(bytes: &[u8]) -> String {
-    let dir = TempDir::new();
-    let path = dir.join("body");
-    std::fs::write(&path, bytes).unwrap();
-    let out = Command::new("/usr/bin/shasum")
-        .args(["-a", "256"])
-        .arg(&path)
-        .output()
-        .expect("cannot run shasum");
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .next()
-        .expect("shasum printed nothing")
-        .to_string()
-}
-
-pub fn only_these_tools(dir: &TempDir, named: &str, tools: &[&str]) -> String {
-    let bin = dir.dir(named);
-    for tool in tools {
-        let mut found = None;
-        for prefix in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
-            let candidate = PathBuf::from(prefix).join(tool);
-            if candidate.exists() {
-                found = Some(candidate);
-                break;
-            }
-        }
-        let from = found.unwrap_or_else(|| panic!("{} is not on the launchd PATH", tool));
-        let _ = std::os::unix::fs::symlink(&from, bin.join(tool));
-    }
-    bin.to_string_lossy().to_string()
-}
-
-type Published = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
-
-pub struct Assets {
-    base: String,
-    port: u16,
-    files: Published,
-    asked: Arc<Mutex<Vec<String>>>,
-    stop: Arc<AtomicBool>,
-}
-
-impl Assets {
-    pub fn start() -> Assets {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("cannot bind the asset server");
-        let port = listener.local_addr().unwrap().port();
-        let files = Arc::new(Mutex::new(Vec::new()));
-        let asked = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-
-        let thread_files = Arc::clone(&files);
-        let thread_asked = Arc::clone(&asked);
-        let thread_stop = Arc::clone(&stop);
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                if thread_stop.load(Ordering::SeqCst) {
-                    break;
-                }
-                let Ok(mut stream) = stream else { break };
-                serve_asset(&mut stream, &thread_files, &thread_asked);
-            }
-        });
-
-        Assets {
-            base: format!("http://127.0.0.1:{}/owner/repo", port),
-            port,
-            files,
-            asked,
-            stop,
-        }
-    }
-
-    pub fn base(&self) -> &str {
-        &self.base
-    }
-
-    pub fn publish(&self, path: &str, body: &[u8]) {
-        self.files
-            .lock()
-            .unwrap()
-            .push((path.to_string(), body.to_vec()));
-    }
-
-    pub fn asked(&self) -> Vec<String> {
-        self.asked.lock().unwrap().clone()
-    }
-}
-
-impl Drop for Assets {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        let _ = TcpStream::connect(("127.0.0.1", self.port));
-    }
-}
-
-fn serve_asset(stream: &mut TcpStream, files: &Published, asked: &Arc<Mutex<Vec<String>>>) {
-    let Ok(peek) = stream.try_clone() else { return };
-    let mut reader = BufReader::new(peek);
-    let mut request = String::new();
-    if reader.read_line(&mut request).is_err() {
-        return;
-    }
-    loop {
-        let mut header = String::new();
-        match reader.read_line(&mut header) {
-            Ok(0) => break,
-            Ok(_) if header.trim().is_empty() => break,
-            Ok(_) => continue,
-            Err(_) => return,
-        }
-    }
-
-    let path = request
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or_default()
-        .to_string();
-    asked.lock().unwrap().push(path.clone());
-
-    let found = files
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|(known, _)| *known == path)
-        .map(|(_, body)| body.clone());
-
-    let mut answer = match &found {
-        Some(body) => format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .into_bytes(),
-        None => {
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
-                .to_vec()
-        }
-    };
-    if let Some(body) = found {
-        answer.extend_from_slice(&body);
-    }
-    let _ = stream.write_all(&answer);
-    let _ = stream.flush();
 }

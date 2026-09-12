@@ -46,8 +46,14 @@ Pin a particular revision with `--ref`, naming a tag from
 [Releases](https://github.com/mike-bronner/herdr-plugin-recent-spaces/releases):
 
 ```sh
-herdr plugin install mike-bronner/herdr-plugin-recent-spaces --ref vX.Y.Z
+herdr plugin install mike-bronner/herdr-plugin-recent-spaces --ref X.Y.Z
 ```
+
+**Release tags carry no `v` from 0.7.0 onward.** Tags up to `v0.6.0` keep the
+prefix they were cut with and are not rewritten, so a tag older than 0.7.0 is
+named `vX.Y.Z` instead. The release workflow refuses the wrong form, because the
+asset URL is built from the tag: a stale `v` produces a 404 and a silent fall
+back to compiling, which nothing would ever surface.
 
 v0.6.0 was the first release to publish binaries. An older tag has none to
 download, so it compiles instead.
@@ -104,50 +110,92 @@ version it just installed, so no toolchain is needed to update either.
 ## Where the binary comes from
 
 The watcher is a Rust binary, and there are two ways to have one: download the
-one published for your platform, or compile the source. Installing prefers the
-download, so no toolchain is needed. A checkout you are working on compiles,
-because a release binary cannot contain the change you just made.
+one published for your platform, or compile the source. Installing downloads, so
+no toolchain is needed. A checkout you are working on compiles, because a
+release binary cannot contain the change you just made.
+
+The shims that do this are not written here. Everything in `bin/` is synced
+byte-identical from
+[herdr-plugin-kit](https://github.com/mike-bronner/herdr-plugin-kit), pinned at
+the same tag `Cargo.toml` pins the crate to, so a hand-edit to any of those
+files fails the build instead of diverging in silence. Each shim reads the two
+facts it needs out of this plugin's own files when it runs: the binary's name
+from `Cargo.toml`'s `[[bin]]` entry, and the plugin's name from
+`herdr-plugin.toml`'s top-level `id`. Nothing is substituted at sync time, which
+is what makes a diff between two plugins' `bin/` directories show drift and
+nothing else.
 
 ### Installing downloads it
 
-Every release since v0.6.0 publishes a binary per platform, with a `.sha256`
-beside it:
+A release publishes one binary per platform, with a `.sha256` beside it:
 
 | Platform | Asset |
 | --- | --- |
-| macOS, Apple Silicon | `watch-aarch64-apple-darwin` |
-| macOS, Intel | `watch-x86_64-apple-darwin` |
-| Linux, arm64 | `watch-aarch64-unknown-linux-musl` |
-| Linux, x86_64 | `watch-x86_64-unknown-linux-musl` |
+| macOS, Apple Silicon | `watch-macos-arm64-<commit>` |
+| macOS, Intel | `watch-macos-x64-<commit>` |
+| Linux, arm64 | `watch-linux-arm64-<commit>` |
+| Linux, x86_64 | `watch-linux-x64-<commit>` |
+| Windows, x86_64 | `watch-windows-x64-<commit>.exe` |
+| Windows, arm64 | `watch-windows-arm64-<commit>.exe` |
+
+`<commit>` is the first twelve characters of the commit the binary was built
+from, and the whole URL is:
+
+```
+https://github.com/<owner>/<repo>/releases/download/<version>/watch-<platform>-<commit>
+```
+
+So the tag names a release a human recognises, and the asset name names the tree
+that produced the binary. **The URL therefore asserts that the binary was built
+from the source in the folder asking for it.** A checkout one commit past the
+tag asks for a file that does not exist, gets a 404 and compiles. That is the
+right answer rather than a miss — nothing compiled that source, so nothing
+should claim to be running it — and it is reached with no comparison logic and
+no network call to resolve a tag, which matters because the shim runs on every
+server start.
+
+The repository comes from this checkout's own `origin` remote, and the version
+from the `herdr-plugin.toml` the shim was handed. A checkout with no GitHub
+origin, or with an uncommitted change to anything the compiler reads, asks for
+nothing and compiles: no published asset can match a tree like that.
 
 The two Linux binaries are static musl builds, so either one runs on glibc and
 musl alike. The macOS binaries are not static. Each links
 `/usr/lib/libSystem.B.dylib`, which every macOS carries.
 
-`herdr plugin install` reads no release metadata at all — it fetches a git ref and
-runs the build step — so `bin/build` composes the URL itself, from the repository
-in `Cargo.toml` and **the version in the `herdr-plugin.toml` it was just handed**.
-Keying on the declared version rather than on the commit or on "latest" is what
-makes the lookup stable: the version only moves on a release commit, so the
-manifest always names a tag that exists. Installing from `main` when `main` is
-ahead of the last release therefore gets the last release's binary, and the newer
-source sits inert until the next release. That is the intended answer, not a
-miss — nothing compiled that source, so nothing should claim to be running it.
+### Windows is published and untested
 
-The download is verified before it is used, and that is not optional. The file is
-fetched to a temporary name, its sha256 is compared against the published one, and
-only a match moves it into place and makes it executable. A mismatch, a missing
-checksum, a checksum that is not a digest, or a machine with no `sha256sum` and no
-`shasum` each refuse the download. Verification is the gate on the move rather than
-a check alongside it, so there is no flag or variable that runs an unverified
-binary. The checksum is published by the same release as the binary, so it proves
-the artifact arrived whole over a verified transport; it is not a signature chain,
-and does not defend against a compromised release.
+**Nothing on the Windows path has ever been run.** The PowerShell shims in
+`bin/` — `build.ps1`, `launcher.ps1` and `common.ps1` — have never been executed
+and have never even been parsed for syntax. They were written on a machine with
+no PowerShell installed, they have no compiler and no CI job, and nobody on this
+project has Windows hardware. Each file says so in its own header.
 
-Every refusal falls through to compiling, including an absent network and a
-platform with no published asset. Herdr aborts a plugin install whose build step
-fails, so a transient network problem must not cost somebody the plugin. Only a
-failure of both ways fails the install, and then the message names both of them.
+CI compiles the watcher for both Windows targets, so the Rust is known to build.
+That is a claim about Rust and about nothing else. **Declaring the `windows`
+platform makes the two published Windows assets reachable. It does not make them
+tested.** Treat a bug there as new information rather than as a regression.
+
+macOS and Linux are the platforms this plugin is developed and used on.
+
+### The download is verified before it is used
+
+The file is fetched to a temporary directory, its sha256 is compared against the
+published one, and only a match moves it into place. **The move is the gate**,
+so no flag, variable or failure mode can put an unverified binary at the path
+the launcher executes. A mismatch is loud, deletes the download, and never
+caches it.
+
+Every refusal falls through to compiling, including an absent network, a 404,
+and a platform with no published asset. Herdr aborts a plugin install whose
+build step fails, so a transient network problem must not cost somebody the
+plugin. The state directory records the last attempt — when, which URL, and the
+outcome — so a release that stopped publishing assets becomes visible rather
+than something you have to notice.
+
+The checksum is published by the same release as the binary, so it proves the
+artifact arrived whole over a verified transport. It is not a signature chain,
+and it does not defend against a compromised release.
 
 ### A checkout you are working on compiles
 
@@ -156,15 +204,34 @@ The shim is what keeps a checkout current, because Herdr's `[[build]]` steps run
 `herdr plugin link`, and they do not run on update. A linked checkout would
 otherwise never build itself, and an update would keep running the old binary
 until you noticed. A stale binary cannot be relied on to notice that for you,
-because the code that would do the noticing is part of what changed, which is why
-the check sits in the shim and not in the watcher.
+because the code that would do the noticing is part of what changed, which is
+why the check sits in the shim and not in the watcher.
 
-So when `bin/watch` finds the source newer than the binary it runs `bin/build`
-with no argument, and that order is reversed: compile first, download only if
-there is no toolchain at all. A rebuild was asked for because the source changed,
-and a release binary cannot answer that. **A compile that fails is never replaced
-by a download**, because that would run code you did not write and hide the error
-that stopped yours.
+So `bin/launcher` runs `bin/build` whenever the binary is behind, and
+`bin/build` decides between fetching and compiling by asking **what kind of
+install this is**, in this order:
+
+1. A file named `BUILD_FROM_SOURCE` in the plugin root compiles, whatever else
+   is true. It is a marker file rather than an environment variable because the
+   routes you would reach for do not arrive: Herdr's server is a launchd agent,
+   so neither a shell export nor mise reaches anything it spawns. `launchctl
+   setenv` would, but only for servers started after it, and an override you
+   have to restart the server to use is the wrong shape for working on a plugin
+   right now. The file is `.gitignore`d, so it cannot be committed by accident.
+2. The `--install` flag compiles nothing and fetches. The flag names the calling
+   context: `[[build]]` fires only on `herdr plugin install`, so the install is
+   a GitHub one by construction and there is nothing to ask.
+3. Otherwise it asks Herdr. A `github` install fetches; a `local` install — your
+   linked checkout — compiles.
+
+Anything that is not plainly `github` reaches the compiling answer, including an
+unreachable socket and a response that will not parse. Being wrong that way
+costs a slow compile. Being wrong the other way hands a developer who asked to
+compile a binary somebody else built.
+
+**A compile that fails is never replaced by a download**, because the fetch is
+always tried before the compile and never after it. A failed compile is the end
+of the run, and it reports what cargo said.
 
 Finding `cargo` by absolute path is not enough. Herdr's server runs under launchd
 with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, and `cargo` is a rustup shim that
@@ -174,22 +241,31 @@ binary's own directory to the `PATH` it builds under. `bin/find-cargo` looks on
 the `PATH` first, then at `$CARGO`, `$CARGO_HOME/bin/cargo`,
 `~/.cargo/bin/cargo`, and the usual Homebrew rustup and `/usr/local` locations.
 
-When `bin/build` cannot produce a binary and one is already there, the shim runs
-that one. It says on stderr that the binary may be stale. Missing cargo alone no
-longer reaches that case, because a verified download answers it. When there is
-no binary either, the shim stops. A failed compile then reports what cargo said.
-A machine with no toolchain is told how to install one. A `[[startup]]` command
-has no terminal, so stderr and `herdr plugin log` are the only places any of
-these messages can appear.
+When `bin/build` cannot produce a binary and one is already there, the launcher
+runs that one and says on stderr that it may be stale. When there is no binary
+either, the launcher stops and names the path it wanted. A machine with no
+toolchain is told how to install one. A `[[startup]]` command has no terminal,
+so stderr and `herdr plugin log` are the only places any of these messages can
+appear.
+
+While a build or a fetch is running the shim draws a spinner, but only where
+something can read it. A `[[startup]]` command is handed no `TERM` and its
+stderr is a pipe, so nothing is drawn there and the server log gets cargo's own
+output instead of escape sequences.
 
 ### How the shim tells the two apart
 
-A downloaded binary is recorded as one, in a small file beside it naming the
-version it was fetched for. The shim needs that because the two go stale for
-different reasons, and asking the wrong question breaks somebody.
+A downloaded binary is recorded as one, in a `watch.download` note beside it
+naming the version it was fetched for, the asset, its checksum and its URL. The
+shim needs that because the two go stale for different reasons, and asking the
+wrong question breaks somebody.
 
 A compiled binary belongs to the source next to it, so mtimes answer: anything
-newer means the binary is behind. That is the development loop, unchanged.
+the compiler reads that is newer than the binary — **or exactly as old as it** —
+means the binary is behind. The tie matters on Linux, where two files written in
+the same timer tick get a byte-identical mtime, and treating that as "current"
+runs a stale binary in silence. Compiling removes any note an earlier fetch left,
+so a compiled binary can never report itself as downloaded.
 
 A downloaded binary belongs to a *release*. On every commit after one the source
 is permanently newer, so mtimes would ask for a rebuild on every server start for
@@ -199,31 +275,35 @@ declares now, and those differ only when a release has been cut, which is exactl
 when a new binary exists to fetch. A version that cannot be read fails closed and
 builds.
 
-One name covers both directions: `bin/asset-name` maps a platform to an asset
-name, and it is the only thing that does. The release workflow asks it to name the
-target it just built and `bin/build` asks it to name the host it is running on, so
-a name published and a name looked for cannot disagree. A platform it does not
-recognise gets no name and a non-zero exit rather than a guess, because a guessed
-name downloads a binary built for another platform.
-
 ## Which build is running
 
 ```sh
-sh bin/watch --version
+sh bin/launcher --version
 ```
 
 ```
-watch 0.6.0 (3d0715d, built 2026-09-10T23:55:59Z)
-manifest 0.6.0 at /Users/you/Developer/herdr-plugin-recent-spaces/herdr-plugin.toml
+watch 0.7.0 (3d0715d, built 2026-09-11T23:55:59Z)
+manifest 0.7.0 at /Users/you/Developer/herdr-plugin-recent-spaces/herdr-plugin.toml
+built from source on this machine
 ```
 
-Two versions, each labelled with where it came from. The first is compiled into
-the binary. The second is read from the manifest on disk at the moment you ask,
-which is the copy Herdr itself reads. When they disagree the binary says so in a
-third line rather than leaving you to compare two numbers:
+Three lines of fact, each labelled with where it came from. The first is
+compiled into the binary. The second is read from the manifest on disk at the
+moment you ask, which is the copy Herdr itself reads. The third is how this
+binary arrived, and a downloaded one names the asset and the URL it came from:
 
 ```
-STALE: this binary is 0.6.0 but the manifest is 0.6.1. Rebuild it with `cargo build --release`.
+fetched watch-macos-arm64-3d0715d4a1b2 from https://github.com/.../releases/download/0.7.0/watch-macos-arm64-3d0715d4a1b2
+```
+
+**All three lines are unconditional**, because a report with a line missing
+would be ambiguous between "fine" and "could not tell".
+
+When the first two disagree the binary says so in a fourth line, rather than
+leaving you to compare two numbers:
+
+```
+STALE: this binary is 0.7.0 but the manifest is 0.7.1. Rebuild it with `cargo build --release`.
 ```
 
 **The remedy follows where the binary came from, because the two readers can do
@@ -232,7 +312,7 @@ source beside it. A downloaded one belongs to a release, and whoever installed i
 has no toolchain to rebuild with, so it is told the thing that works for them:
 
 ```
-STALE: this binary is 0.6.0 but the manifest is 0.6.1. This binary was downloaded, so reinstall the plugin to get the 0.6.1 binary.
+STALE: this binary is 0.7.0 but the manifest is 0.7.1. This binary was fetched, so reinstall the plugin to get the 0.7.1 binary.
 ```
 
 The note beside a downloaded binary is what tells the two apart, and it is the
@@ -253,12 +333,11 @@ happens between a `git pull` and the next server restart. The watcher running in
 that window is the old code, and the commit is the evidence.
 
 A server restart also clears the `STALE:` line, because the shim runs then and
-gets a current binary whichever way it can: it compiles when a toolchain is there,
-and downloads the published binary when there is none. The line names the action
-you can take yourself, where you are reading it.
+gets a current binary whichever way it can. The line names the action you can
+take yourself, where you are reading it.
 
-So **asking for the version never builds**. The shim answers the flag before its
-staleness check, because a version command that rebuilt first would erase the
+So **asking for the version never builds**. The launcher answers the flag before
+its staleness check, because a version command that rebuilt first would erase the
 condition it exists to report. Nothing connects to the socket either, so the
 answer is the same with Herdr stopped.
 
@@ -306,13 +385,26 @@ claim. An edited `README.md` or an edited `herdr-plugin.toml` cannot, so neither
 one moves the marker. A field whose only job is to carry signal must not carry
 noise, because it is read exactly when something is already confusing.
 
-One list in `build.rs` names those files — `src`, `build.rs`, `Cargo.toml` and
-`Cargo.lock` — and that same list is both the `cargo:rerun-if-changed` set and
-the pathspec the status check runs under. They cannot drift apart, which is the
-point: when the two halves disagreed, the marker could report the wrong state in
-both directions. Editing a file outside the list rebuilt nothing, so the marker
-kept claiming clean against a dirty tree; building while one was edited and then
-reverting it left the marker claiming dirty forever.
+One list names those files — `src`, `build.rs`, `Cargo.toml`, `Cargo.lock`,
+`.cargo`, `rust-toolchain` and `rust-toolchain.toml` — and that same list is
+both the `cargo:rerun-if-changed` set and the pathspec the status check runs
+under. They cannot drift apart, which is the point: when the two halves
+disagreed, the marker could report the wrong state in both directions. Editing a
+file outside the list rebuilt nothing, so the marker kept claiming clean against
+a dirty tree; building while one was edited and then reverting it left the marker
+claiming dirty forever.
+
+`build.rs` here is a `main` whose whole body is
+`herdr_plugin_kit_build::stamp()`, so the list lives in the kit, as
+`BUILD_INPUTS`. The shims read the same seven names to
+decide whether this checkout could have produced a published binary. Both are
+answering "was this binary built from committed source?", so letting them differ
+would make the stamp and the fetch disagree about the same tree.
+
+Listing both `rust-toolchain` and `rust-toolchain.toml` is not redundant. Git
+pathspecs match whole path components, so `rust-toolchain` does not match
+`rust-toolchain.toml`, and dropping either one leaves a file the compiler reads
+unwatched.
 
 A stale manifest version is a separate question, and the `STALE:` line already
 answers it from the manifest on disk at the moment you ask.
@@ -343,9 +435,18 @@ price for closing that.
 ## How it talks to Herdr
 
 Over Herdr's socket, at `HERDR_SOCKET_PATH`, and not by shelling out to the CLI.
-The wire protocol is newline-delimited JSON with no handshake: one connection per
-request, `{id, method, params}` out and `{id, result}` or `{id, error}` back. The
-watcher uses `workspace.list` and `workspace.move`, and nothing else.
+The client is the kit's. The wire protocol is newline-delimited JSON: one
+connection per request, `{id, method, params}` out and `{id, result}` or
+`{id, error}` back.
+
+The watcher opens with a single `ping` and then uses `workspace.list` and
+`workspace.move`. The ping is a check rather than a negotiation — nothing waits
+on it and nothing is refused by it. It compares the protocol version the server
+reports against the one this binary's types were generated for, and says so on
+stderr when the two differ. A server that does not answer it at all is reported
+in the same place, and the watcher then runs anyway: a protocol the plugin has
+not been told about is a reason to warn somebody, never a reason to stop
+reordering their sidebar.
 
 The socket is the only way in for this plugin either way: `herdr workspace` offers
 `list`, `create`, `get`, `focus`, `rename`, `report-metadata` and `close`, with no
@@ -420,8 +521,10 @@ HERDR_RECENT_DWELL=10
 HERDR_RECENT_PIN=~
 ```
 
-Values may be quoted. `#` starts a comment only at the beginning of a line, and a
-line without `=` is ignored.
+Values may be quoted, in single or double quotes, and the pair is stripped only
+when both ends match. A `#` makes the line a comment when it is the first
+character that is not blank, and a line without `=` is ignored. The parser is the
+kit's, and it is the one the Python watcher this plugin replaced used to have.
 
 ### Which setting wins
 
@@ -486,21 +589,34 @@ bring the watcher back after it has gone.
 
 ## Requires
 
-Herdr 0.9.0 or newer, and nothing else on the four platforms listed
-[above](#installing-downloads-it): installing downloads the watcher, and the
-watcher talks to Herdr over the socket, so there is no runtime dependency either.
-`curl` or `wget` to fetch it, and `sha256sum` or `shasum` to verify it — both
-pairs are already present on a stock macOS and on any ordinary Linux.
+Herdr 0.9.0 or newer, and nothing else on macOS and Linux: installing downloads
+the watcher, and the watcher talks to Herdr over the socket, so there is no
+runtime dependency either. `curl` to fetch it and `sha256sum` or `shasum` to
+verify it — both are already present on a stock macOS and on any ordinary Linux,
+and both live in `/usr/bin`, which is what lets a fetch work under the launchd
+`PATH` Herdr runs with. There is deliberately no `wget` fallback: a second
+downloader would need its own exit-code classification, and nothing here could
+test it. A machine with no `curl` compiles, and says so.
 
-A Rust toolchain — `cargo` 1.75 or newer — is needed in two cases: working on the
-plugin, and running it on a platform no binary is published for. When neither a
-download nor a compile can be had, the install stops and names both:
+[Windows is published and untested](#windows-is-published-and-untested), and
+that section is the whole of what is known about it.
+
+A Rust toolchain is needed in two cases: working on the plugin, and running it on
+a platform no binary is published for.
+
+**There is no declared minimum version, on purpose.** A plugin ships as a
+compiled binary, so a floor would document a requirement for people who never
+compile. If you do compile, the binding constraint today is `regress`, which the
+kit depends on and which declares `edition = "2024"`: that needs Rust 1.85 or
+newer. The kit's own generated types need 1.80 for `LazyLock`, so 1.85 is the
+figure that matters. Every CI job takes its runner's own toolchain.
+
+When there is no toolchain and no usable published binary, the install stops and
+says both things:
 
 ```
-recent-spaces: no watcher binary, and both ways of getting one failed:
-recent-spaces:   1. nothing published at https://github.com/.../watch-...
-recent-spaces:   2. cargo not found, so it could not be compiled here
-recent-spaces: install a Rust toolchain with `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, then run `cargo build --release` in /path/to/herdr-plugin-recent-spaces
+recent-spaces: no Rust toolchain here, and no published binary could be used.
+recent-spaces: install Rust with `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, then run `cargo build --release` in /path/to/herdr-plugin-recent-spaces
 ```
 
 ## Tests
@@ -514,24 +630,30 @@ so what is checked is the requests it does and does not send. The dwell clock,
 the poll interval and the 30-second grace period are driven by injected clocks
 rather than by waiting, so those tests finish in hundredths of a second.
 
-`cargo test` as a whole takes about twenty seconds. `tests/version.rs` is nearly
+`cargo test` as a whole takes about forty seconds. `tests/version.rs` is nearly
 all of it. That file runs `cargo build --release` in a temporary checkout
-seventeen times. The build stamp and the `-dirty` marker come from `build.rs`, so
-checking either one means building. It also waits past four second boundaries, to
-tell a re-stamped binary from one that was not rebuilt.
+seventeen times. The build stamp and the `-dirty` marker are produced during the
+build, so checking either one means building. It also waits past four second
+boundaries, to tell a re-stamped binary from one that was not rebuilt.
 
 `herdr-plugin.toml` is parsed for real, because Herdr re-reads that file at
 dispatch time and a syntax error in it stops the plugin silently, with no toast
-and nothing surfaced. `bin/watch`, `bin/build` and `bin/asset-name` are run for
-real too, against fake plugin roots and a stubbed cargo, under the launchd `PATH`.
+and nothing surfaced. The suite checks that every command the manifest declares
+names a shim that is there, that each platform it claims gets exactly one build
+step and exactly one watcher, and that each is dispatched through an interpreter
+that can run on that platform.
 
-The download path runs for real as well, against a stub release server on
-loopback: a fake plugin root names it as its repository, so the tests exercise the
-same URL composition, the same checksum comparison and the same refusals that a
-real install does. A machine with no toolchain is simulated by replacing
-`bin/find-cargo`, which is a file of its own for exactly that reason — a candidate
-list with four absolute paths in it cannot be made to fail on a machine that has
-cargo installed.
+**The shims themselves are not tested here, deliberately.** They are synced from
+herdr-plugin-kit, which tests every one of them by name against fake plugin
+roots, a stubbed `cargo`, a stub release server and a stubbed `uname`. Testing
+them again here would be a copy of that coverage in the one place that cannot
+enforce it: the kit's reusable CI runs the sync check on every push, so an edit
+to a synced file is a failing build rather than a silent divergence.
+
+What this repository does check about them is what only it can: that `bin/`
+matches the kit, and that its two workflow callers and its `Cargo.toml` pin the
+same kit version. Two pins that disagree would check this tree against one kit
+while compiling it against another.
 
 The tree is rustfmt-formatted on the tool's defaults, with no `rustfmt.toml` to
 carry: `cargo fmt --check` is expected to pass. `cargo clippy --all-targets -- -D
@@ -539,19 +661,44 @@ warnings` is expected to be silent.
 
 ### What CI runs, and what it gates
 
-Those three commands are the gates, and they run on every push and every pull
-request. Each one is its own step, so the step that fails names the gate that
-failed, and nothing reads a gate's output: a step fails the job on a non-zero exit
-status, and that is the only thing judged. Two defects reached this repository
-because a check read result lines instead of an exit status, and a job doing the
-same would manufacture confidence rather than earn it.
+`.github/workflows/ci.yml` is a caller, about thirty lines of it, and every gate
+lives in herdr-plugin-kit's reusable workflow pinned at the same tag `Cargo.toml`
+pins the crate to. Bumping one ref moves the checks for every plugin together.
 
-A release runs the same three gates first, on the very ref it is about to publish
-from, and publishes nothing until they pass. A published asset is what people
-download, and it cannot be recalled once somebody has it.
+It runs on every push and every pull request. Both triggers are needed: when a
+pull request cannot compute a merge ref against `main`, Actions skips its
+`pull_request` workflows entirely, with no run and no error, and the checks
+simply never appear.
 
-CI runs on macOS because the suite cannot run anywhere else: its temporary
+Three jobs:
+
+| Job | What it settles |
+| --- | --- |
+| Conformance | `bin/` still matches the kit's templates, and the versions and the tag form agree |
+| Gates | the suite, the formatting, and clippy with warnings denied |
+| Build | all six release targets compile and link, on native runners |
+
+The version gate is the load-bearing one, and it is silent in production without
+it. It asserts that `bin/common` and cargo name the same binary, that
+`herdr-plugin.toml` and `Cargo.toml` state the same version, that no
+`v`-prefixed tag names the declared version, and that no release tag sorts above
+it. Under download-by-default, a manifest that disagrees with its tag means every
+install requests an asset that does not exist and compiles instead — and the
+plugin still works, so nothing surfaces.
+
+The suite runs on macOS because it cannot run anywhere else: its temporary
 directories live under `/private/tmp`, which exists on macOS and not on Linux.
+That is the only input the caller passes, and there is nothing else to pass. A
+crate name, a binary name or a toolchain version would each repeat a fact the
+manifests already state, and an input that disagreed with a manifest would
+publish one asset name while every install requested another.
+
+`.github/workflows/release.yml` is a caller too, and it grants `contents: write`.
+A called workflow runs on the caller's permissions and cannot raise its own, so
+without that line the run fails before it starts. It builds the six targets,
+writes a `.sha256` beside each binary, and publishes all six or none: five
+platforms published and a sixth missing is not a partial success, it is one
+platform compiling on every install forever with nothing to say so.
 
 No Rust file carries a comment or a doc comment, tests included, and
 `no_rust_source_file_carries_a_comment` fails the suite when one appears. Test

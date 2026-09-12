@@ -1,7 +1,15 @@
 mod support;
 
+use herdr_plugin_kit::api::client::{CallError, Client, Socket};
 use recent_spaces::promote::{hold_pin, tick, Dwell};
 use support::*;
+
+fn refusal_code(error: CallError) -> Option<String> {
+    match error {
+        CallError::Server(body) => Some(body.code),
+        other => panic!("the stub refused the call, and this reads as {:?}", other),
+    }
+}
 
 fn settled(id: &str, since: f64) -> Dwell {
     let mut dwell = Dwell::new();
@@ -46,10 +54,7 @@ fn a_refused_pin_move_is_reported_rather_than_swallowed() {
     let rows = vec![open("a", "w2", false), open("~", "w1", false)];
     let failed = hold_pin(&stub.client(), &rows, "~");
     assert_eq!(
-        failed
-            .err()
-            .and_then(|e| e.code().map(str::to_string))
-            .as_deref(),
+        failed.err().and_then(refusal_code).as_deref(),
         Some("workspace_not_found")
     );
 }
@@ -214,11 +219,18 @@ fn a_dwell_read_from_config_is_what_the_clock_waits_for() {
 
 #[test]
 fn an_unreachable_socket_is_reported_so_the_grace_clock_can_start() {
-    let client = recent_spaces::api::Client::new(std::path::PathBuf::from(
-        "/private/tmp/recent-spaces-no-such.sock",
-    ));
+    let client = Client::new(
+        Socket::at("/private/tmp/recent-spaces-no-such.sock"),
+        "test",
+    );
     let mut dwell = Dwell::new();
-    assert!(tick(&client, &settings(10.0, "~"), &mut dwell, 1.0).is_err());
+    let failed = tick(&client, &settings(10.0, "~"), &mut dwell, 1.0);
+    assert!(
+        matches!(failed, Err(CallError::Connect { .. })),
+        "a socket that is not there is a connect failure rather than a refusal, \
+         because the two want different answers: {:?}",
+        failed
+    );
 }
 
 #[test]

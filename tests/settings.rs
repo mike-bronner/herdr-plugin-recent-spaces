@@ -2,9 +2,8 @@ mod support;
 
 use std::path::Path;
 
-use recent_spaces::api::socket_path;
 use recent_spaces::config::{
-    parse_env_file, parse_recent_config, read_sources, resolve_settings, state_dir, Settings,
+    parse_recent_config, read_sources, resolve_settings, state_dir, Settings,
     DEFAULT_DWELL_SECONDS, DEFAULT_PIN_LABEL, DWELL_VAR, PIN_VAR,
 };
 use support::*;
@@ -194,29 +193,6 @@ fn a_key_this_plugin_has_no_setting_for_is_named_on_stderr() {
 }
 
 #[test]
-fn an_env_file_keeps_the_parsing_the_python_watcher_had() {
-    let parsed = parse_env_file(
-        "# dwell in seconds\n\n  HERDR_RECENT_DWELL = '3'  \nHERDR_RECENT_PIN=\"my space\"\n#HERDR_RECENT_PIN=commented-out\nnot-a-setting\n=novalue\n",
-    );
-    assert_eq!(
-        parsed,
-        vec![
-            ("HERDR_RECENT_DWELL".to_string(), "3".to_string()),
-            ("HERDR_RECENT_PIN".to_string(), "my space".to_string()),
-        ]
-    );
-}
-
-#[test]
-fn an_unmatched_quote_in_an_env_file_is_kept_verbatim() {
-    let parsed = parse_env_file("HERDR_RECENT_PIN=\"half\n");
-    assert_eq!(
-        parsed,
-        vec![("HERDR_RECENT_PIN".to_string(), "\"half".to_string())]
-    );
-}
-
-#[test]
 fn a_malformed_env_file_line_is_skipped_and_the_rest_still_loads() {
     let dir = TempDir::new();
     dir.write(".env", "HERDR_RECENT_DWELL 5\nHERDR_RECENT_PIN=home\n");
@@ -241,28 +217,6 @@ fn the_shipped_defaults_name_both_settings() {
     assert_eq!(parsed.unknown, Vec::<String>::new());
     assert!(parsed.table.dwell.is_some());
     assert_eq!(parsed.table.pin.as_deref(), Some("~"));
-}
-
-#[test]
-fn the_socket_path_comes_from_herdr_socket_path() {
-    let env = env_for(&[("HERDR_SOCKET_PATH", "/run/herdr/custom.sock")]);
-    assert_eq!(socket_path(&env), Path::new("/run/herdr/custom.sock"));
-}
-
-#[test]
-fn an_unset_or_empty_socket_path_falls_back_to_the_config_root() {
-    for unset in [None, Some("")] {
-        let env = match unset {
-            Some(value) => env_for(&[("HERDR_SOCKET_PATH", value)]),
-            None => env_for(&[]),
-        };
-        assert_eq!(
-            socket_path(&env),
-            Path::new("/private/tmp/.config/herdr/herdr.sock"),
-            "{:?}",
-            unset
-        );
-    }
 }
 
 #[test]

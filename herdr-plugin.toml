@@ -1,29 +1,50 @@
 id = "mikebronner.recent-spaces"
 name = "Recent Spaces"
-version = "0.6.0"
+version = "0.7.0"
 min_herdr_version = "0.9.0"
 description = "Keep the spaces sidebar in most-recently-used order"
-platforms = ["macos", "linux"]
+
+# Windows is declared because the release publishes assets for it, and the two
+# are one decision rather than two. `["sh", ...]` cannot run on Windows, so a
+# Windows user would install the plugin, watch the shell shim never execute,
+# and have no way to reach the binary built for them. See herdr-plugin-kit
+# SCOPE.md section 10.1.
+#
+# ⚠️ Declaring the platform makes those assets reachable. It does not make them
+# tested: no PowerShell shim in bin/ has ever been run or even parsed, and
+# nobody on this project has Windows hardware. Treat a bug there as new
+# information rather than as a regression. The README says the same.
+platforms = ["macos", "linux", "windows"]
 
 # The watcher is a Rust binary, and this step gets one.
 #
-# `--prefer-download` asks for the binary published for this platform by the
-# release this manifest declares, falling back to compiling only when no
-# verified binary can be had. Installing therefore needs no Rust toolchain.
-# Every fallback is deliberate: Herdr aborts an install whose build step fails,
-# so a transient network problem must not cost somebody the plugin.
+# `--install` names the calling context, not the action. [[build]] fires only
+# during `herdr plugin install owner/repo` — measured as not running on plugin
+# link, on plugin enable, or on a server restart — so the install is `github`
+# by construction here, and the shim asks Herdr what kind of install it is only
+# on the startup path. A linked checkout and an updated one therefore build
+# nothing here, which is why bin/launcher builds before it execs the binary.
+# See docs/herdr-behaviour.md.
 #
-# It runs during `herdr plugin install owner/repo` and at no other time:
-# measured as not running on plugin link, on plugin enable, or on a server
-# restart. A linked checkout and an updated one therefore build nothing here,
-# which is why bin/watch builds before it execs the binary. See
-# docs/herdr-behaviour.md.
+# The step fetches the binary published for this platform by the release this
+# manifest declares, and compiles only when no verified binary can be had.
+# Installing therefore needs no Rust toolchain. Every fallback is deliberate:
+# Herdr aborts an install whose build step fails, so a transient network
+# problem must not cost somebody the plugin.
+#
+# Herdr supports per-item `platforms` that override the list above, so each
+# shim is declared twice: once for the shell and once for PowerShell.
 [[build]]
-command = ["sh", "bin/build", "--prefer-download"]
+command = ["sh", "bin/build", "--install"]
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["powershell", "-File", "bin/build.ps1", "--install"]
+platforms = ["windows"]
 
 # One long-lived watcher, started once when the Herdr server starts.
 #
-# The command is the shim, never the build artifact: bin/watch rebuilds the
+# The command is the shim, never the build artifact: bin/launcher rebuilds the
 # binary when the source is newer and then execs it, so a `git pull` cannot
 # leave the old binary running. A path under target/ would also break the
 # moment the profile changed.
@@ -38,4 +59,9 @@ command = ["sh", "bin/build", "--prefer-download"]
 # unlike an [[events]] change, which Herdr picks up on the very next event
 # because it re-reads this file at dispatch time.
 [[startup]]
-command = ["sh", "bin/watch"]
+command = ["sh", "bin/launcher"]
+platforms = ["macos", "linux"]
+
+[[startup]]
+command = ["powershell", "-File", "bin/launcher.ps1"]
+platforms = ["windows"]

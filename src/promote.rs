@@ -1,9 +1,38 @@
-use crate::api::{self, CallError, Client, Workspace};
+use herdr_plugin_kit::api::client::{CallError, Client};
+use herdr_plugin_kit::api::generated::{
+    EmptyParams, RequestMethod, ResponseResult, WorkspaceInfo, WorkspaceMoveParams,
+};
+
 use crate::config::Settings;
 
-pub const PROMOTE_INDEX: usize = 1;
+pub const PROMOTE_INDEX: u32 = 1;
 
-pub const PIN_INDEX: usize = 0;
+pub const PIN_INDEX: u32 = 0;
+
+pub fn workspaces(client: &Client) -> Result<Vec<WorkspaceInfo>, CallError> {
+    match client.call(RequestMethod::WorkspaceList(EmptyParams(
+        serde_json::Map::new(),
+    )))? {
+        ResponseResult::WorkspaceList { workspaces } => Ok(workspaces),
+        other => Err(CallError::Protocol(format!(
+            "workspace.list answered {:?}, which is not a list of workspaces",
+            other
+        ))),
+    }
+}
+
+pub fn workspace_move(
+    client: &Client,
+    workspace_id: &str,
+    insert_index: u32,
+) -> Result<(), CallError> {
+    client
+        .call(RequestMethod::WorkspaceMove(WorkspaceMoveParams {
+            insert_index,
+            workspace_id: workspace_id.to_string(),
+        }))
+        .map(|_| ())
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Dwell {
@@ -28,7 +57,7 @@ impl Dwell {
 
 pub fn hold_pin(
     client: &Client,
-    listed: &[Workspace],
+    listed: &[WorkspaceInfo],
     pin_label: &str,
 ) -> Result<Option<String>, CallError> {
     let pin = listed
@@ -38,7 +67,7 @@ pub fn hold_pin(
     if let Some(id) = &pin {
         let first = listed.first().map(|w| w.workspace_id.as_str());
         if first != Some(id.as_str()) {
-            api::workspace_move(client, id, PIN_INDEX)?;
+            workspace_move(client, id, PIN_INDEX)?;
         }
     }
     Ok(pin)
@@ -50,7 +79,7 @@ pub fn tick(
     dwell: &mut Dwell,
     now: f64,
 ) -> Result<(), CallError> {
-    let listed = api::workspaces(client)?;
+    let listed = workspaces(client)?;
     if listed.is_empty() {
         return Ok(());
     }
@@ -74,8 +103,8 @@ pub fn tick(
 
     dwell.promoted = true;
     let at = listed.iter().position(|w| w.workspace_id == current);
-    if at != Some(PROMOTE_INDEX) {
-        api::workspace_move(client, &current, PROMOTE_INDEX)?;
+    if at != Some(PROMOTE_INDEX as usize) {
+        workspace_move(client, &current, PROMOTE_INDEX)?;
     }
     Ok(())
 }
