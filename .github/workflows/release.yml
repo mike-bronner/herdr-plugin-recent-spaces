@@ -16,6 +16,27 @@ name: Release
 # is what stops the two conventions crossing at the one place that publishes: a
 # stale `v` in an asset URL is a 404 and a silent fall back to compiling, and
 # nothing surfaces. Tags up to v0.6.0 keep their prefix and are not rewritten.
+#
+# 🔑 Why this is a caller again, when ci.yml is not. The reusable release
+# workflow was withdrawn in kit 0.4.0 and restored in 0.4.2, and what changed in
+# between is where it reads the pin. It used to ask the Actions context which of
+# its own versions this file named, and the context does not carry that: a
+# callee cannot learn what a caller pinned. It now reads the pin out of this
+# plugin's own Cargo.toml, which it has already checked out, because
+# `github.repository` is the caller's. The asymmetry is the whole fix — a caller
+# always knows what it pinned. herdr-plugin-kit SCOPE.md §11.2.1 and §11.5.
+#
+# 🔻 `plugin-ci.yml` was withdrawn in the same 0.4.0 and did not come back, so
+# ci.yml holds this plugin's gates itself. Only the release half is a call.
+#
+# 🚨 Neither the target table nor a single asset name is written here, and that
+# is the duplication this call exists to end. Both come out of the kit's
+# plugin_gate.py, which is the producing half of a two-sided agreement whose
+# consuming half is `asset_url` in bin/common — and the kit's own
+# tools/test_plugin_gate.py runs both sides against each other. A copy here
+# could disagree with the copy those tests cover, and a producer and a consumer
+# disagreeing about this name is a 404, a silent compile, and nobody finding
+# out.
 
 on:
   release:
@@ -29,6 +50,11 @@ permissions:
 
 jobs:
   release:
-    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-release.yml@0.3.0
+    # 🚨 This ref and the two tags in Cargo.toml move together, always. A caller
+    # naming one version while the crate pins another runs one kit's workflow
+    # against another kit's tools, and
+    # `the_release_caller_and_the_crate_pin_one_kit_between_them` in
+    # tests/packaging.rs fails the suite when they drift apart.
+    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-release.yml@0.4.2
     permissions:
       contents: write

@@ -493,6 +493,20 @@ that had reached it. Two clean release builds on this machine each read
 1,878,800 exactly, so the 32 bytes are reproducible rather than build noise, and
 they are unexplained in the same way the 16 below are.
 
+**Kit 0.4.2 is not a row in that table, and that was measured rather than
+argued.** 0.4.0 could not have moved one: its two crates differed from 0.3.0's by
+exactly two lines, and both were the `version` field of a `Cargo.toml`. 0.4.2 is
+not that case. It adds 134 lines to `src/env.rs`, where `Environment` gains
+`vars` and `expanduser`, and this plugin calls neither — so the claim that
+nothing links is a claim about dead-code elimination, which is the kind of claim
+this section does not take on trust. **Measured 2026-09-13**, two clean release
+builds on this machine each read 1,878,800 bytes, which is the last row exactly.
+
+What 0.4.1 and 0.4.2 changed otherwise is the tooling around the crate rather
+than the crate. 0.4.0 withdrew both reusable workflows and added the `asset-name`
+subcommand; 0.4.2 brought the release one back, reading the kit pin out of the
+plugin instead of out of an Actions context that never carried it.
+
 The 0.1.0 figure was recorded as 3,257,616 bytes the day before. The same commit
 builds at 3,257,600 here on the same machine and the same profile, and the 16
 bytes are unexplained. A dirty build stamp was ruled out by measuring one. Both
@@ -695,13 +709,16 @@ that can run on that platform.
 herdr-plugin-kit, which tests every one of them by name against fake plugin
 roots, a stubbed `cargo`, a stub release server and a stubbed `uname`. Testing
 them again here would be a copy of that coverage in the one place that cannot
-enforce it: the kit's reusable CI runs the sync check on every push, so an edit
-to a synced file is a failing build rather than a silent divergence.
+enforce it: this repository's own CI runs the kit's sync check on every push, so
+an edit to a synced file is a failing build rather than a silent divergence.
 
 What this repository does check about them is what only it can: that `bin/`
-matches the kit, and that its two workflow callers and its `Cargo.toml` pin the
-same kit version. Two pins that disagree would check this tree against one kit
-while compiling it against another.
+matches the kit, and that every kit version it states is the same one. CI carries
+none — it reads the pin out of `Cargo.toml` at run time — and the release caller
+carries exactly one, in the ref on its `uses:` line, because a caller has to name
+the workflow it calls. That ref and the manifest's two tags are asserted equal,
+since a caller naming one version while the crate pins another checks this tree
+against one kit while publishing it with another.
 
 The tree is rustfmt-formatted on the tool's defaults, with no `rustfmt.toml` to
 carry: `cargo fmt --check` is expected to pass. `cargo clippy --all-targets -- -D
@@ -709,9 +726,40 @@ warnings` is expected to be silent.
 
 ### What CI runs, and what it gates
 
-`.github/workflows/ci.yml` is a caller, about thirty lines of it, and every gate
-lives in herdr-plugin-kit's reusable workflow pinned at the same tag `Cargo.toml`
-pins the crate to. Bumping one ref moves the checks for every plugin together.
+`.github/workflows/ci.yml` holds its own gates. It was a five-line caller into
+`plugin-ci.yml` in herdr-plugin-kit until that workflow was withdrawn in the
+kit's 0.4.0, and it was withdrawn because it could not work.
+
+**A called workflow cannot discover which of its own versions a caller pinned.**
+`github.job_workflow_sha` is empty, `github.job_workflow_ref` is not in the
+context at all, and `github.workflow_ref` names the caller's own entry workflow
+rather than the called one. Measured twice on 2026-09-12, on a branch and on a
+tag, across two trigger events, so it is about neither ref kinds nor events. The
+kit's conformance job checked this plugin out and then refused, in three seconds,
+on every legitimate call. It failed closed, which is the only reason it surfaced
+as a red build rather than as a silent check against the wrong kit.
+
+**The discovery problem runs one way only, and that asymmetry is what makes it
+fixable.** A callee cannot learn what a caller pinned. A caller always knows,
+because the pin is sitting in its own `Cargo.toml`. So the gates moved to the
+side that holds the answer: this workflow reads its own pin, checks the kit out
+at that tag, and runs the kit's two gate scripts itself. Nothing about the gates
+changed in the move, and the conformance steps are the kit's published recipe
+copied rather than restated — a paraphrase is how three plugins end up running
+three different checks.
+
+The same asymmetry can be used from the other end, and the release half is where
+it was. `plugin-release.yml` came back in the kit's 0.4.2 resolving the pin from
+the plugin it has already checked out, because `github.repository` is the
+caller's repository. So the two workflows here differ only because one reusable
+workflow exists and the other does not — `release.yml` is a call again and this
+file is not.
+
+The pin is read through `cargo metadata` rather than out of the TOML, because
+that needs no network and no lockfile and answers for a workspace-inherited
+dependency that a regex cannot see at all. A pin that is not a tag — a branch, a
+commit, a bare git source or a path — stops the job rather than checking out
+nothing, because none of them has a version to check against.
 
 It runs on every push and every pull request. Both triggers are needed: when a
 pull request cannot compute a merge ref against `main`, Actions skips its
@@ -722,9 +770,9 @@ Three jobs:
 
 | Job | What it settles |
 | --- | --- |
-| Conformance | `bin/` still matches the kit's templates, and the versions and the tag form agree |
-| Gates | the suite, the formatting, and clippy with warnings denied |
-| Build | all six release targets compile and link, on native runners |
+| `kit-gates` | `bin/` still matches the kit's templates, and the versions and the tag form agree |
+| `gates` | the suite, the formatting, and clippy with warnings denied |
+| `build` | all six release targets compile and link, on native runners |
 
 The version gate is the load-bearing one, and it is silent in production without
 it. It asserts that `bin/common` and cargo name the same binary, that
@@ -734,19 +782,49 @@ it. Under download-by-default, a manifest that disagrees with its tag means ever
 install requests an asset that does not exist and compiles instead — and the
 plugin still works, so nothing surfaces.
 
+The plugin checkout takes `fetch-depth: 0`, and that line is not housekeeping.
+The version gate reads tag history, and a shallow clone lets it pass by seeing no
+releases at all. A gate that passes because it saw nothing reports green, which
+is worse than a gate that is missing.
+
 The suite runs on macOS because it cannot run anywhere else: its temporary
 directories live under `/private/tmp`, which exists on macOS and not on Linux.
-That is the only input the caller passes, and there is nothing else to pass. A
-crate name, a binary name or a toolchain version would each repeat a fact the
-manifests already state, and an input that disagreed with a manifest would
-publish one asset name while every install requested another.
+The `build` job takes its six rows from the kit's `plugin_gate.py matrix`, so
+this file names no target triple at all. Nobody on this project has Windows
+hardware, which makes that job the only thing that ever checks the Windows paths
+— and it has to check them before a release rather than during one.
 
-`.github/workflows/release.yml` is a caller too, and it grants `contents: write`.
-A called workflow runs on the caller's permissions and cannot raise its own, so
-without that line the run fails before it starts. It builds the six targets,
-writes a `.sha256` beside each binary, and publishes all six or none: five
-platforms published and a sixth missing is not a partial success, it is one
-platform compiling on every install forever with nothing to say so.
+`.github/workflows/release.yml` is a caller: eleven lines of YAML, of which the
+job is five. It grants `contents: write` at both the workflow and the job. A
+called workflow runs on the caller's permissions and cannot raise its own, so
+without that grant the run fails before it starts rather than 403-ing halfway
+through a release.
+
+**It is a call rather than a job because the alternative is the same 260 lines
+maintained in three plugins.** That is the duplication this whole migration
+exists to end, and the kit is where a release job can be tested: its
+`plugin_gate.py` holds the target table and every asset name, with its own tests
+behind both. The producing half of that name is `plugin_gate.py`, the consuming
+half is `asset_url` in `bin/common`, and the kit runs both sides against each
+other — a copy of either here could disagree with the copy those tests cover, and
+a producer and a consumer disagreeing about an asset name is a 404, a silent fall
+back to compiling, and nobody finding out.
+
+So the ref on that `uses:` line is a second kit pin, and it is the one thing a
+caller can get wrong on its own. It names a version while `Cargo.toml` names
+another, and the release then runs one kit's workflow against another kit's
+tools. `the_release_caller_and_the_crate_pin_one_kit_between_them` fails the
+suite when the three drift apart, which is why the pin is moved in one commit or
+not at all.
+
+What the kit's workflow does with it is unchanged from what this repository used
+to describe. It builds the six targets on native runners, writes a `.sha256`
+beside each binary, and publishes all six or none: five platforms published and a
+sixth missing is not a partial success, it is one platform compiling on every
+install forever with nothing to say so. Linux is musl, so the published binary
+carries no glibc floor. Nothing is stripped after the fact, because
+`[profile.release]` sets `strip = true` and cargo strips at link time, before
+macOS ad-hoc signs the Mach-O.
 
 No Rust file carries a comment or a doc comment, tests included, and
 `no_rust_source_file_carries_a_comment` fails the suite when one appears. Test

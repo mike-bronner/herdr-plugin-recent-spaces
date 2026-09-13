@@ -45,8 +45,8 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "herdr-plugin-kit"
-version = "0.3.0"
-source = "git+https://github.com/mike-bronner/herdr-plugin-kit?tag=0.3.0#326645d0be2ac62889c96f983cbc8f9b65e402cf"
+version = "0.4.2"
+source = "git+https://github.com/mike-bronner/herdr-plugin-kit?tag=0.4.2#5de677e1be7c46a41fdfbb8a4b91446257e7b2ab"
 dependencies = [
  "interprocess",
  "regress",
@@ -57,8 +57,8 @@ dependencies = [
 
 [[package]]
 name = "herdr-plugin-kit-build"
-version = "0.3.0"
-source = "git+https://github.com/mike-bronner/herdr-plugin-kit?tag=0.3.0#326645d0be2ac62889c96f983cbc8f9b65e402cf"
+version = "0.4.2"
+source = "git+https://github.com/mike-bronner/herdr-plugin-kit?tag=0.4.2#5de677e1be7c46a41fdfbb8a4b91446257e7b2ab"
 
 [[package]]
 name = "indexmap"
