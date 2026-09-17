@@ -3,6 +3,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -97,6 +98,12 @@ pub fn listed(label: &str, id: &str, focused: bool) -> Value {
 
 pub fn open(label: &str, id: &str, focused: bool) -> WorkspaceInfo {
     serde_json::from_value(listed(label, id, focused)).expect("the fixture row is not a workspace")
+}
+
+pub fn workspace_rows(rows: &[Value]) -> Vec<WorkspaceInfo> {
+    rows.iter()
+        .map(|row| serde_json::from_value(row.clone()).expect("the fixture row is not a workspace"))
+        .collect()
 }
 
 pub fn settings(dwell: f64, pin: &str) -> Settings {
@@ -202,6 +209,19 @@ impl Stub {
             .collect()
     }
 
+    pub fn blocks(&self) -> Vec<Vec<String>> {
+        self.requests()
+            .iter()
+            .filter(|r| r.get("method").and_then(Value::as_str) == Some("workspace.move_block"))
+            .filter_map(|r| {
+                let ids = r.get("params")?.get("workspace_ids")?.as_array()?;
+                ids.iter()
+                    .map(|id| id.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .collect()
+    }
+
     pub fn moves(&self) -> Vec<(String, u64)> {
         self.requests()
             .iter()
@@ -271,6 +291,8 @@ fn answer_for(method: &str, script: &Script, id: &Value) -> Value {
                                       "workspaces": script.workspaces})),
         "workspace.move" => ok(json!({"type": "workspace_list",
                                       "workspaces": script.workspaces})),
+        "workspace.move_block" => ok(json!({"type": "workspace_list",
+                                            "workspaces": script.workspaces})),
         _ => fail("unhandled_by_stub"),
     }
 }
@@ -347,6 +369,126 @@ impl Claim for StubClaim {
             Answer::Stored(held) => held.lock().unwrap().clone(),
             Answer::Fixed(token) => token.clone(),
         }
+    }
+}
+
+pub const BINARY: &str = env!("CARGO_BIN_EXE_watch");
+
+pub struct Run {
+    pub status: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub fn bounded(command: &mut Command) -> Run {
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("cannot run the watcher");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if child
+            .try_wait()
+            .expect("cannot check the watcher")
+            .is_some()
+        {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the watcher never exited, so it is polling instead of answering");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let out = child
+        .wait_with_output()
+        .expect("cannot read what the watcher said");
+    Run {
+        status: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+    }
+}
+
+pub fn invoke(binary: &Path, arguments: &[&str], extra: &[(&str, &str)]) -> Run {
+    let mut command = Command::new(binary);
+    command
+        .args(arguments)
+        .env_clear()
+        .env("PATH", LAUNCHD_PATH)
+        .env("HOME", "/private/tmp");
+    for (key, value) in extra {
+        command.env(key, value);
+    }
+    bounded(&mut command)
+}
+
+pub struct Running(Option<std::process::Child>);
+
+impl Running {
+    pub fn start(socket: &Path, state: &Path) -> Running {
+        Running(Some(
+            Command::new(BINARY)
+                .env_clear()
+                .env("PATH", LAUNCHD_PATH)
+                .env("HOME", "/private/tmp")
+                .env("HERDR_SOCKET_PATH", socket)
+                .env("HERDR_PLUGIN_STATE_DIR", state)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("cannot run the watcher"),
+        ))
+    }
+
+    pub fn still_running(&mut self) -> bool {
+        match self.0.as_mut() {
+            Some(child) => child
+                .try_wait()
+                .expect("cannot check the watcher")
+                .is_none(),
+            None => false,
+        }
+    }
+
+    pub fn stop(mut self) -> String {
+        let mut child = self.0.take().expect("the watcher was already stopped");
+        let _ = child.kill();
+        let out = child
+            .wait_with_output()
+            .expect("cannot read what the watcher said");
+        String::from_utf8_lossy(&out.stderr).to_string()
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+pub fn watch_until(watcher: &mut Running, ready: impl Fn() -> bool, wanted: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready() {
+        assert!(
+            watcher.still_running(),
+            "no argument is how Herdr starts it, so it must watch rather than exit \
+             before {}",
+            wanted
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "it stayed up without ever reaching {}",
+            wanted
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 

@@ -2,7 +2,10 @@ mod support;
 
 use std::path::PathBuf;
 
+use recent_spaces::version::TOGGLE_FLAG;
 use support::*;
+
+const TOGGLE_ACTION: &str = "toggle-order";
 
 fn manifest() -> toml::Table {
     read_repo_file("herdr-plugin.toml")
@@ -176,6 +179,76 @@ fn windows_is_claimed_because_the_release_publishes_assets_for_it() {
 }
 
 #[test]
+fn the_only_control_this_plugin_has_is_declared_as_an_action() {
+    let ours: Vec<toml::Value> = entries("actions")
+        .into_iter()
+        .filter(|entry| entry["id"].as_str() == Some(TOGGLE_ACTION))
+        .collect();
+    assert_eq!(
+        ours.len(),
+        1,
+        "a manifest cannot declare a keybinding, so the action is the whole of what \
+         this plugin can offer the user to switch orders with"
+    );
+    assert!(
+        argv(&ours[0]).iter().any(|a| a == TOGGLE_FLAG),
+        "the manifest and the binary have to name the same flag, or Herdr dispatches \
+         an argument the binary refuses: {:?}",
+        argv(&ours[0])
+    );
+}
+
+#[test]
+fn no_two_actions_share_an_id_whatever_their_platforms_say() {
+    let mut ids: Vec<String> = entries("actions")
+        .iter()
+        .map(|entry| entry["id"].as_str().unwrap().to_string())
+        .collect();
+    let declared = ids.len();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        declared,
+        "measured against Herdr 0.9.1 on 2026-09-17: two [[actions]] entries sharing \
+         an id are refused with `duplicate_plugin_action_id` even when their \
+         `platforms` lists are disjoint, and the whole manifest then fails to load. \
+         Doubling an action per platform is fatal where doubling a build step is not."
+    );
+}
+
+#[test]
+fn the_toggle_is_dispatched_through_the_launcher_and_not_a_build_artifact() {
+    for entry in entries("actions") {
+        let command = argv(&entry);
+        assert!(
+            command.iter().any(|a| a.starts_with("bin/launcher")),
+            "the launcher is what rebuilds a stale binary before it execs one: {:?}",
+            command
+        );
+        assert!(
+            !command.iter().any(|a| a.contains("target/")),
+            "a build-artifact path breaks the moment the profile changes: {:?}",
+            command
+        );
+    }
+}
+
+#[test]
+fn the_readme_names_the_action_the_way_a_keybinding_has_to_name_it() {
+    let bindable = format!(
+        "{}.{}",
+        manifest()["id"].as_str().unwrap(),
+        entries("actions")[0]["id"].as_str().unwrap()
+    );
+    assert!(
+        read_repo_file("README.md").contains(&bindable),
+        "a user binds `{}` by hand, so a README naming anything else binds nothing",
+        bindable
+    );
+}
+
+#[test]
 fn no_event_hook_is_subscribed() {
     assert!(
         !manifest().contains_key("events"),
@@ -215,7 +288,7 @@ fn the_manifest_and_the_crate_agree_on_the_version() {
 
 #[test]
 fn every_shim_named_in_the_manifest_is_there() {
-    for section in ["build", "startup"] {
+    for section in ["build", "startup", "actions"] {
         for entry in entries(section) {
             let command = argv(&entry);
             let named = command
@@ -295,10 +368,12 @@ fn every_rust_source_file_is_covered_by_that_guard() {
         "lib.rs",
         "claim.rs",
         "config.rs",
+        "order.rs",
         "promote.rs",
         "retire.rs",
         "version.rs",
         "mod.rs",
+        "ordering.rs",
         "promotion.rs",
         "retirement.rs",
         "settings.rs",

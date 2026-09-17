@@ -1,18 +1,40 @@
 # Recent Spaces — a Herdr plugin
 
 Keeps the spaces sidebar of [Herdr](https://herdr.dev), the agent-aware
-terminal multiplexer, in most-recently-used order.
+terminal multiplexer, in most-recently-used order — or in alphabetical order,
+whichever you last asked it for.
 
 ## What it does
 
-The watcher runs for the whole life of your Herdr server. Once focus has rested
-in a workspace for a dwell period (10 seconds by default) that workspace is moved
-to the top of the sidebar, so the list reads newest to oldest. Quick flicks
-through workspaces reorder nothing.
+The watcher runs for the whole life of your Herdr server and keeps the spaces
+sidebar in one of two orders. An action switches between them, and your choice
+outlives a server restart.
 
-The home workspace (label `~`, configurable) is pinned at the very top and never
-moves. A workspace is promoted once per visit: leave it and come back and its
-dwell starts afresh, rather than resuming where it left off.
+**Recency**, the order this plugin has always kept and the one it starts in.
+Once focus has rested in a workspace for a dwell period (10 seconds by default)
+that workspace is moved to the top of the sidebar, so the list reads newest to
+oldest. Quick flicks through workspaces reorder nothing. A workspace is promoted
+once per visit: leave it and come back and its dwell starts afresh, rather than
+resuming where it left off.
+
+**Alphabetical**, by label, ignoring case — because this is a list you read, and
+a case-sensitive sort would scatter it. Everything below the pin is ordered on
+every poll. The dwell and the promotion are inert here: alphabetical owns the
+position, so the two orders are alternatives rather than layers.
+
+The home workspace (label `~`, configurable) is pinned at the very top in both
+orders, and is never promoted itself.
+
+There are exactly two orders and no third "off". Disabling the plugin already
+covers that, and it is the honest way to say it: nothing running, nothing
+reordering.
+
+Alphabetical order re-asserts itself on every poll, so a space you drag in the
+sidebar is put back within two seconds. That is what it means for a plugin to own
+the order, rather than a fault to work around.
+
+See [Switching the order](#switching-the-order) for the action and how to bind a
+key to it.
 
 Pairs well with [herdr-plugin-project-finder](https://github.com/mike-bronner/herdr-plugin-project-finder),
 which opens the workspaces this plugin then keeps in order.
@@ -358,14 +380,16 @@ the same as running it through the shim.
 
 ### What the watcher accepts on the command line
 
-No arguments, or `--version` on its own. Nothing else.
+No arguments, or `--version` on its own, or `--toggle-order` on its own. Nothing
+else, and never two of them together.
 
 Herdr dispatches the `[[startup]]` command with no arguments, so the
-no-argument case is the watcher and always will be. Every other argument is
-refused on stderr with exit 2:
+no-argument case is the watcher and always will be. `--toggle-order` is what the
+`[[actions]]` entry dispatches; it writes the order file and exits without
+reaching the socket. Every other argument is refused on stderr with exit 2:
 
 ```
-recent-spaces: unknown argument `--help`; run it with no arguments to watch, or `--version` to report the build
+recent-spaces: unknown argument `--help`; run it with no arguments to watch, `--version` to report the build, or `--toggle-order` to switch the sidebar order
 ```
 
 It is drawn that tightly because the alternative was measured and it is nasty.
@@ -373,8 +397,8 @@ Anything that was not exactly the flag used to fall through into the poll loop, 
 `--help`, a misspelt flag, or a stray argument started a long-lived watcher that
 held the terminal and took one of Herdr's 32 plugin slots. The cost landed on
 whoever was debugging, which is the worst audience for it. There is deliberately
-no `--help`: this is a startup command with two invocations, and the refusal names
-both of them.
+no `--help`: this is a startup command with three invocations, and the refusal
+names all of them.
 
 ### What `-dirty` means, and why it is drawn that narrowly
 
@@ -439,8 +463,8 @@ The client is the kit's. The wire protocol is newline-delimited JSON: one
 connection per request, `{id, method, params}` out and `{id, result}` or
 `{id, error}` back.
 
-The watcher opens with a single `ping` and then uses `workspace.list` and
-`workspace.move`. The ping is a check rather than a negotiation — nothing waits
+The watcher opens with a single `ping` and then uses `workspace.list`,
+`workspace.move` and `workspace.move_block`. The ping is a check rather than a negotiation — nothing waits
 on it and nothing is refused by it. It compares the protocol version the server
 reports against the one this binary's types were generated for, and says so on
 stderr when the two differ. A server that does not answer it at all is reported
@@ -454,19 +478,44 @@ The socket is the only way in for this plugin either way: `herdr workspace` offe
 a code: a workspace Herdr refuses to move can be told apart from a server that has
 gone away, without matching a phrase on stderr.
 
-### Both calls name one result type, not the union of all 64
+### Alphabetical order costs one call, not one per workspace
+
+`workspace.move_block` takes a list of workspace ids and a workspace to put them
+before. Hand it **every** id in the order you want and omit the `before`, and it
+sets the whole sidebar in a single call — the pin included, so alphabetical mode
+never issues a separate `workspace.move` to hold it. Recency mode still uses
+`workspace.move`, which moves one workspace to one index and is the right shape
+for promoting one.
+
+The call is skipped entirely when the sidebar already reads in the wanted order,
+which is the usual case once it has settled: re-asserting an order Herdr already
+has would cost a round trip every two seconds for nothing. That check also covers
+the empty sidebar, which matters — Herdr refuses a block carrying no ids at all.
+Both behaviours were measured; see
+[`docs/herdr-behaviour.md`](docs/herdr-behaviour.md).
+
+### Every call names one result type, not the union of all 64
 
 The kit's `ResponseResult` is one enum carrying every shape Herdr can answer
 with, and a caller that names it pays for every one: serde emits parsing code per
 variant, and all of them stay reachable through the single type, so the linker
-drops none. Beside it the kit generates a result type per variant. Both calls
-here name `WorkspaceListAnswer`, which is the tag and the workspaces and nothing
-else.
+drops none. Beside it the kit generates a result type per variant. All three
+calls here name `WorkspaceListAnswer`, which is the tag and the workspaces and
+nothing else.
 
-Both name the same one, and that is not an oversight. `workspace.move` is
+All three name the same one, and that is not an oversight. `workspace.move` is
 answered with the sidebar after the move, and there is no moved-shaped result
-type at all. That was measured against a live server, and it is written down in
+type at all. `workspace.move_block` answers with that same shape, so alphabetical
+order arrived without a second result type and the 43.9% below still holds. Both
+were measured against a live server, and they are written down in
 [`docs/herdr-behaviour.md`](docs/herdr-behaviour.md).
+
+**What the second order did cost, measured 2026-09-17** on macOS arm64 at the same
+`opt-level = "s"` and `strip = true`: a clean clone at `97ae4c6` built to
+1,878,800 bytes, which is the last row of the table below exactly, and this tree
+built to 1,918,496. **39,696 bytes, or 2.1%.** That is the `order` module, the
+block params, and the JSON the choice is kept in — not a result type, which is
+the cost this section exists to track.
 
 **Measured 2026-09-12 on macOS arm64**, at this crate's release profile of
 `opt-level = "s"` with `strip = true`, building the same tree four ways:
@@ -516,9 +565,89 @@ readings are of the union, so nothing above turns on which is right.
 `tokens`, whose keys are pattern-constrained, so the regex engine arrives with
 the one variant this plugin does read. The saving is the other 63.
 
+## Switching the order
+
+The plugin declares one action, `toggle-order`. It flips the sidebar between the
+two orders and records the choice. The running watcher reads that choice on its
+next poll and re-orders within two seconds. Nothing restarts, and nothing is
+reinstalled.
+
+```sh
+herdr plugin action invoke toggle-order --plugin mikebronner.recent-spaces
+```
+
+The action id comes **before** `--plugin`; that is the order the CLI accepts.
+The action prints which order it switched to on stderr, where
+`herdr plugin log list --plugin mikebronner.recent-spaces` will show it along
+with the exit code.
+
+### Bind it to a key
+
+**A plugin manifest cannot declare a keybinding.** Herdr's manifest schema has no
+`keys` field, so a `[[keys.command]]` block written into `herdr-plugin.toml` is
+ignored in silence. Declaring the action is the whole of what a plugin can do —
+the binding is yours, in your own `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+ctrl+s"
+type = "plugin_action"
+command = "mikebronner.recent-spaces.toggle-order"
+description = "toggle the spaces sidebar order"
+```
+
+`command` is the plugin id and the action id joined by a dot. `prefix+ctrl+s` is
+an example; pick any key you have free. Check the file with `herdr config check`
+and apply it with `herdr server reload-config`.
+
+### Where the choice is kept
+
+In `recent-spaces-order.json`, in the plugin's Herdr-provided state directory,
+beside the claim file:
+
+```json
+{"order": "alphabetical"}
+```
+
+That file is the whole channel between the two halves. The action and the watcher
+are separate processes that share nothing else, and they do not need to: Herdr
+hands an action the same `HERDR_PLUGIN_STATE_DIR` it hands the `[[startup]]`
+command, which was measured rather than assumed. The file is written under a
+temporary name and renamed into place, the way the claim file is, so a watcher
+polling mid-write never reads half of one.
+
+Because it is a file rather than a signal, the choice survives a server restart,
+and the watcher started by the next restart reads it before its first move.
+
+**It is deliberately not a `config.toml` setting.** The toggle is the control,
+and a configured default beside it would be a second answer to the same
+question — one of them stale the moment you pressed the key.
+
+A missing, unreadable, or unrecognised file reads as recency, the order this
+plugin has always kept, so nothing you can do to that file stops the sidebar
+being ordered. The next toggle overwrites it with a good one.
+
+The state directory carries no session component, so every named session in a
+config root shares one choice.
+
+### Windows has both orders and no way to switch
+
+The action runs `sh`, which Windows cannot, so the toggle will not work there.
+The watcher itself keeps its own PowerShell entry and is unaffected.
+
+It is one entry rather than one per platform because **two `[[actions]]` entries
+sharing an id are refused even when their `platforms` lists are disjoint**, and
+the whole manifest then fails to load — measured against Herdr 0.9.1, and
+recorded in [`docs/herdr-behaviour.md`](docs/herdr-behaviour.md). Splitting the
+action per platform would therefore break the plugin for everybody, to fix it for
+a platform whose shims have never been run. `bin/launcher.ps1` stays in `bin/` for
+the day somebody can test one.
+
 ## Configure
 
-Every setting is optional. They are written as TOML, in the plugin's
+The order is not among the settings below — it is the toggle above, and it is
+kept where that section says. Every setting here is optional. They are written as
+TOML, in the plugin's
 `config.toml`, so they read like the rest of your Herdr configuration:
 
 ```sh
@@ -610,7 +739,10 @@ holds a slot in Herdr's plugin pool for the whole session, so a typo in optional
 config must never be what stops the sidebar reordering.
 
 Settings are read once, when the server starts the watcher, so a change to any of
-them needs a server restart like the `[[startup]]` entry itself.
+them needs a server restart like the `[[startup]]` entry itself. The order is the
+exception, and that is the point of keeping it out of these files: it is re-read
+on every poll, so the toggle takes effect in two seconds rather than at the next
+restart.
 
 ## Exactly one watcher
 
@@ -703,7 +835,10 @@ dispatch time and a syntax error in it stops the plugin silently, with no toast
 and nothing surfaced. The suite checks that every command the manifest declares
 names a shim that is there, that each platform it claims gets exactly one build
 step and exactly one watcher, and that each is dispatched through an interpreter
-that can run on that platform.
+that can run on that platform. It also checks that no two actions share an id,
+which Herdr refuses outright, and that the flag the manifest dispatches is the one
+the binary accepts — a drift there would hand Herdr an argument the watcher
+refuses with exit 2, and the only sign of it would be a keypress that did nothing.
 
 **The shims themselves are not tested here, deliberately.** They are synced from
 herdr-plugin-kit, which tests every one of them by name against fake plugin

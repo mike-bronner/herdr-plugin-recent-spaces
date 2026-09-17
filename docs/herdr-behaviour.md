@@ -96,7 +96,7 @@ then zero after the server restarted at 2026-09-08 19:41:47 UTC to pick up the
 0.9.0 install from one minute earlier. Every promotion since has been
 API-triggered. The event-driven design was correct when it was written.
 
-## What the two calls are answered with
+## What the three calls are answered with
 
 **Measured 2026-09-11 against Herdr 0.9.0, protocol 22**, in an isolated server
 stood up by the recipe above, with three workspaces created through
@@ -109,12 +109,12 @@ type it reads. The kit generates a result type per response variant beside
 `ResponseResult`, which is a single enum carrying all 64 shapes Herdr can answer
 with. A caller naming the union pays for all 64: serde emits parsing code per
 variant, and every one stays reachable through the one type, so nothing can drop
-them. Both calls here name `WorkspaceListAnswer`, which carries a one-variant
-`type` tag and the workspaces. An answer of any other shape is refused rather
-than ignored, so a plugin that guesses wrong stops working the first time it
-calls. What that is worth in bytes is measured in the README, under
-[Both calls name one result
-type](../README.md#both-calls-name-one-result-type-not-the-union-of-all-64).
+them. All three calls here name `WorkspaceListAnswer`, which carries a
+one-variant `type` tag and the workspaces. An answer of any other shape is
+refused rather than ignored, so a plugin that guesses wrong stops working the
+first time it calls. What that is worth in bytes is measured in the README, under
+[Every call names one result
+type](../README.md#every-call-names-one-result-type-not-the-union-of-all-64).
 
 ### `workspace.move` is answered with the whole sidebar
 
@@ -135,6 +135,46 @@ fresh `workspace.list` immediately after read the same three in the same order.
 This plugin drops them anyway: the next poll is two seconds away, and focus may
 have moved by then. It names the result type all the same, so an answer that is
 not the sidebar is now a protocol error instead of a silent success.
+
+### `workspace.move_block` sets a whole order in one call, and answers the same way
+
+**Measured 2026-09-17 against Herdr 0.9.1, protocol 22**, in an isolated server
+stood up by the recipe above, with five workspaces made through
+`workspace.create` and nothing else in it. `workspace.list` returned zero
+workspaces before they were made, `plugin.list` returned none at all, and the
+live `~/.config/herdr/plugins.json` was byte-identical by sha256 afterwards.
+
+`WorkspaceMoveBlockParams` carries `workspace_ids`, a list, and an optional
+`before_workspace_id`. **Omit the `before` and the block goes to the end of the
+sidebar**, in the order given. So passing *every* workspace id, in the order you
+want them, sets the entire sidebar in one call. From `w1 ~, w2 delta, w3 Alpha,
+w4 charlie, w5 bravo`, a block of `[w1, w3, w5, w4, w2]` with no `before` was
+answered with exactly that order, and a fresh `workspace.list` read the same.
+
+It is answered with the sidebar **after** the move, the same shape
+`workspace.move` answers with:
+
+```json
+{"id": "...", "result": {"type": "workspace_list", "workspaces": [ ... ]}}
+```
+
+**Not a block-shaped result, and not `ok`.** So a plugin doing both needs no
+second result type, which is what keeps the saving in the README's table intact.
+
+Four refusals were measured, and two of them constrain a caller:
+
+| Params | Answer |
+| --- | --- |
+| `workspace_ids: []` | `workspace_move_block_failed`, "workspace_ids must not be empty" |
+| an id no workspace has | `workspace_not_found` |
+| `before_workspace_id` inside `workspace_ids` | `workspace_move_block_failed`, "before_workspace_id must not be part of workspace_ids" |
+| a partial block, no `before` | accepted; that block moves to the end |
+
+**The empty-list refusal is the one to design around.** A plugin that computes an
+order and sends it unconditionally will call this with an empty list the moment
+the sidebar is empty, and get an error rather than a no-op. This plugin never
+reaches it, because it skips the call whenever the sidebar already reads in the
+wanted order, and an empty sidebar trivially does.
 
 ### `workspace.list` rows carry more than this plugin reads
 
@@ -256,6 +296,106 @@ root share one state directory.
 Hazards 1 and 3 together are why the watcher retires itself two ways: a
 newest-wins claim file, and an exit once the socket has been unreachable for 30
 seconds.
+
+## `[[actions]]`
+
+**Measured 2026-09-17 against Herdr 0.9.1**, in an isolated server stood up by
+the recipe above, with a throwaway plugin linked into it whose action dumped its
+own environment. The live `~/.config/herdr/plugins.json` was byte-identical by
+sha256 afterwards.
+
+An array of tables, like `[[startup]]`. The entry requires `id`, `title` and
+`command`; `description`, `platforms` and `contexts` are optional, and `contexts`
+is one of `global`, `workspace`, `tab`, `pane`, `selection`. Extra argv items in
+`command` reach the shim: `["sh", "bin/act", "--toggle-order"]` ran with
+`$1 = --toggle-order`.
+
+```toml
+[[actions]]
+id = "toggle-order"
+title = "Toggle the spaces sidebar order"
+command = ["sh", "bin/launcher", "--toggle-order"]
+```
+
+### 🚨 Two entries sharing an id are refused, disjoint platforms or not
+
+`plugin.link` on a manifest declaring `toggle-order` twice — once for
+`["macos", "linux"]` and once for `["windows"]` — was refused outright:
+
+```json
+{"code": "duplicate_plugin_action_id", "message": "duplicate action id 'toggle-order'"}
+```
+
+An action id has to be unique across every entry, whatever `platforms` says. That
+is what makes the per-platform doubling legal in `[[build]]` and `[[startup]]`
+and fatal here. A sibling plugin measured the same rule for `[[panes]]` on 0.9.0
+and shipped a release broken by it; this is the same rule, confirmed for actions
+on 0.9.1.
+
+### It is re-read at dispatch, not at link or at restart
+
+An action added to `herdr-plugin.toml` **after** the plugin was linked appeared
+in `plugin.action.list` and invoked successfully, with no relink and no server
+restart. So `[[actions]]` behaves like `[[events]]` and not like `[[startup]]`:
+Herdr reads the manifest from disk when it dispatches.
+
+The list came back sorted by id rather than in manifest order.
+
+### What it is handed
+
+```
+HERDR_SOCKET_PATH        HERDR_PLUGIN_CONFIG_DIR   HERDR_PLUGIN_STATE_DIR
+HERDR_PLUGIN_ROOT        HERDR_PLUGIN_ID           HERDR_PLUGIN_ACTION_ID=<id>
+HERDR_PLUGIN_CONTEXT_JSON={"workspace_id":...,"invocation_source":"api",...}
+HERDR_BIN_PATH           HERDR_SESSION             HERDR_ENV=1
+HERDR_PANE_ID            HERDR_TAB_ID              HERDR_WORKSPACE_ID
+HOME  PATH  PWD  XDG_CONFIG_HOME
+```
+
+🔑 **`HERDR_PLUGIN_STATE_DIR` is the same value a `[[startup]]` command is
+handed** — `~/.local/state/herdr/plugins/<plugin-id>`, with no session
+component. That is what lets an action and a long-lived watcher in the same
+plugin share a file without either one knowing about the other. `PWD` is the
+plugin root and `PATH` is the launchd `/usr/bin:/bin:/usr/sbin:/sbin`, both as
+on the startup path.
+
+Where startup gets `HERDR_PLUGIN_EVENT=startup`, an action gets
+`HERDR_PLUGIN_ACTION_ID` instead. `invocation_source` in the context JSON reads
+`api`, `cli` or `keybinding` depending on how it was invoked.
+
+### The exit code and both streams are captured
+
+`plugin.action.invoke` returns immediately with `status: "running"`. The run is
+recorded, and `plugin.log.list` then carries `status`, `exit_code`, `stdout` and
+`stderr` in full. So an action that fails is visible to
+`herdr plugin log list --plugin <id>` rather than being lost, which is why the
+toggle exits non-zero when it cannot write.
+
+### Invoking one from the CLI puts the id first
+
+```sh
+herdr plugin action invoke <action_id> --plugin <plugin_id>
+```
+
+`herdr plugin action invoke --plugin <plugin_id> <action_id>` is refused with
+`unknown option`, and so is `--plugin=<plugin_id> <action_id>`. The positional
+has to come before the option.
+
+### A keybinding names the action; the manifest cannot
+
+A plugin manifest has no `keys` field, so it cannot declare a binding. The user's
+own `config.toml` does, and `herdr config check` accepted this against 0.9.1:
+
+```toml
+[[keys.command]]
+key = "prefix+ctrl+o"
+type = "plugin_action"
+command = "mikebronner.recent-spaces.toggle-order"
+```
+
+`type` is one of `shell`, `pane`, `popup`, `plugin_action` — a bogus value was
+refused by `config check`, naming all four, so the check is real rather than
+permissive. `command` is the plugin id and the action id joined by a dot.
 
 ## `[[build]]`
 

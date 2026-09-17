@@ -3,7 +3,7 @@ name = "recent-spaces"
 version = "0.7.0"
 edition = "2021"
 license = "MIT"
-description = "Keep the Herdr spaces sidebar in most-recently-used order"
+description = "Keep the Herdr spaces sidebar in most-recently-used or alphabetical order"
 repository = "https://github.com/mike-bronner/herdr-plugin-recent-spaces"
 
 [lib]

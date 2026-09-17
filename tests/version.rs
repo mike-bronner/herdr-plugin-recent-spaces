@@ -9,61 +9,6 @@ use herdr_plugin_kit::version::{PROVENANCE_SUFFIX, UNKNOWN};
 use recent_spaces::version::{requested, Request};
 use support::*;
 
-const BINARY: &str = env!("CARGO_BIN_EXE_watch");
-
-struct Run {
-    status: i32,
-    stdout: String,
-    stderr: String,
-}
-
-fn bounded(command: &mut Command) -> Run {
-    let mut child = command
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("cannot run the watcher");
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        if child
-            .try_wait()
-            .expect("cannot check the watcher")
-            .is_some()
-        {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("the watcher never exited, so it is polling instead of answering");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-
-    let out = child
-        .wait_with_output()
-        .expect("cannot read what the watcher said");
-    Run {
-        status: out.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-    }
-}
-
-fn invoke(binary: &Path, arguments: &[&str], extra: &[(&str, &str)]) -> Run {
-    let mut command = Command::new(binary);
-    command
-        .args(arguments)
-        .env_clear()
-        .env("PATH", LAUNCHD_PATH)
-        .env("HOME", "/private/tmp");
-    for (key, value) in extra {
-        command.env(key, value);
-    }
-    bounded(&mut command)
-}
-
 fn ask(binary: &Path, extra: &[(&str, &str)]) -> Run {
     invoke(binary, &["--version"], extra)
 }
@@ -293,7 +238,7 @@ fn asking_for_the_version_never_reaches_the_socket() {
 
 fn refusal_for(argument: &str) -> String {
     format!(
-        "recent-spaces: unknown argument `{}`; run it with no arguments to watch, or `--version` to report the build\n",
+        "recent-spaces: unknown argument `{}`; run it with no arguments to watch, `--version` to report the build, or `--toggle-order` to switch the sidebar order\n",
         argument
     )
 }
@@ -334,17 +279,24 @@ fn an_argument_after_the_flag_is_refused_instead_of_being_dropped() {
 }
 
 #[test]
-fn the_argument_grammar_accepts_nothing_but_the_flag_on_its_own() {
+fn the_argument_grammar_accepts_nothing_but_a_known_flag_on_its_own() {
     let given = |all: &[&str]| -> Vec<OsString> { all.iter().map(OsString::from).collect() };
     assert_eq!(requested(&given(&[])), Request::Watch);
     assert_eq!(requested(&given(&["--version"])), Request::Report);
+    assert_eq!(requested(&given(&["--toggle-order"])), Request::Toggle);
     for (arguments, named) in [
         (vec!["--help"], "--help"),
         (vec!["--Version"], "--Version"),
         (vec!["--version="], "--version="),
+        (vec!["--toggle"], "--toggle"),
+        (vec!["--toggle-order="], "--toggle-order="),
+        (vec!["--Toggle-Order"], "--Toggle-Order"),
         (vec![""], ""),
         (vec!["--version", "stray"], "stray"),
         (vec!["stray", "--version"], "stray"),
+        (vec!["--toggle-order", "stray"], "stray"),
+        (vec!["stray", "--toggle-order"], "stray"),
+        (vec!["--version", "--toggle-order"], "--toggle-order"),
     ] {
         assert_eq!(
             requested(&given(&arguments)),
@@ -360,71 +312,6 @@ fn an_argument_that_is_not_text_is_refused_rather_than_fatal() {
     use std::os::unix::ffi::OsStringExt;
     let raw = OsString::from_vec(vec![0x2d, 0x2d, 0xff, 0xfe]);
     assert!(matches!(requested(&[raw]), Request::Refuse(_)));
-}
-
-struct Running(Option<std::process::Child>);
-
-impl Running {
-    fn start(socket: &Path, state: &Path) -> Running {
-        Running(Some(
-            Command::new(BINARY)
-                .env_clear()
-                .env("PATH", LAUNCHD_PATH)
-                .env("HOME", "/private/tmp")
-                .env("HERDR_SOCKET_PATH", socket)
-                .env("HERDR_PLUGIN_STATE_DIR", state)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .expect("cannot run the watcher"),
-        ))
-    }
-
-    fn still_running(&mut self) -> bool {
-        match self.0.as_mut() {
-            Some(child) => child
-                .try_wait()
-                .expect("cannot check the watcher")
-                .is_none(),
-            None => false,
-        }
-    }
-
-    fn stop(mut self) -> String {
-        let mut child = self.0.take().expect("the watcher was already stopped");
-        let _ = child.kill();
-        let out = child
-            .wait_with_output()
-            .expect("cannot read what the watcher said");
-        String::from_utf8_lossy(&out.stderr).to_string()
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        if let Some(child) = self.0.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-fn watch_until(watcher: &mut Running, ready: impl Fn() -> bool, wanted: &str) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !ready() {
-        assert!(
-            watcher.still_running(),
-            "no argument is how Herdr starts it, so it must watch rather than exit \
-             before {}",
-            wanted
-        );
-        assert!(
-            std::time::Instant::now() < deadline,
-            "it stayed up without ever reaching {}",
-            wanted
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
 }
 
 fn polled(stub: &Stub) -> bool {

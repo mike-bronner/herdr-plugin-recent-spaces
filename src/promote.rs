@@ -1,9 +1,12 @@
+use std::path::Path;
+
 use herdr_plugin_kit::api::client::{CallError, Client};
 use herdr_plugin_kit::api::generated::{
     EmptyParams, RequestMethod, WorkspaceInfo, WorkspaceListAnswer, WorkspaceMoveParams,
 };
 
 use crate::config::Settings;
+use crate::order::{self, Mode};
 
 pub const PROMOTE_INDEX: u32 = 1;
 
@@ -72,12 +75,17 @@ pub fn hold_pin(
 pub fn tick(
     client: &Client,
     settings: &Settings,
+    state_dir: &Path,
     dwell: &mut Dwell,
     now: f64,
 ) -> Result<(), CallError> {
     let listed = workspaces(client)?;
     if listed.is_empty() {
         return Ok(());
+    }
+    if order::read(state_dir) == Mode::Alphabetical {
+        *dwell = Dwell::new();
+        return order::hold_alphabetical(client, &listed, &settings.pin);
     }
     let pin = hold_pin(client, &listed, &settings.pin)?;
 

@@ -18,8 +18,15 @@ fn settled(id: &str, since: f64) -> Dwell {
     dwell
 }
 
-fn poll(stub: &Stub, dwell: &mut Dwell, now: f64) -> Vec<(String, u64)> {
-    tick(&stub.client(), &settings(10.0, "~"), dwell, now).expect("the poll failed");
+fn poll(stub: &Stub, state: &TempDir, dwell: &mut Dwell, now: f64) -> Vec<(String, u64)> {
+    tick(
+        &stub.client(),
+        &settings(10.0, "~"),
+        state.path(),
+        dwell,
+        now,
+    )
+    .expect("the poll failed");
     stub.moves()
 }
 
@@ -106,8 +113,12 @@ fn a_workspace_dwelled_in_long_enough_is_promoted_below_the_pin() {
         listed("a", "w2", false),
         listed("b", "w3", true),
     ]));
+    let state = TempDir::new();
     let mut dwell = settled("w3", 100.0);
-    assert_eq!(poll(&stub, &mut dwell, 110.0), vec![("w3".to_string(), 1)]);
+    assert_eq!(
+        poll(&stub, &state, &mut dwell, 110.0),
+        vec![("w3".to_string(), 1)]
+    );
     assert!(dwell.promoted);
 }
 
@@ -118,8 +129,9 @@ fn short_of_the_dwell_nothing_moves() {
         listed("a", "w2", false),
         listed("b", "w3", true),
     ]));
+    let state = TempDir::new();
     let mut dwell = settled("w3", 100.0);
-    assert_eq!(poll(&stub, &mut dwell, 109.9), Vec::new());
+    assert_eq!(poll(&stub, &state, &mut dwell, 109.9), Vec::new());
     assert!(!dwell.promoted);
 }
 
@@ -130,8 +142,9 @@ fn a_focus_change_seen_by_this_poll_restarts_the_clock() {
         listed("a", "w2", false),
         listed("b", "w3", true),
     ]));
+    let state = TempDir::new();
     let mut dwell = settled("w2", 100.0);
-    assert_eq!(poll(&stub, &mut dwell, 110.0), Vec::new());
+    assert_eq!(poll(&stub, &state, &mut dwell, 110.0), Vec::new());
     assert_eq!(dwell.workspace_id.as_deref(), Some("w3"));
     assert_eq!(dwell.since, 110.0);
 }
@@ -143,9 +156,10 @@ fn a_promoted_workspace_is_not_promoted_again() {
         listed("b", "w3", true),
         listed("a", "w2", false),
     ]));
+    let state = TempDir::new();
     let mut dwell = settled("w3", 100.0);
     dwell.promoted = true;
-    assert_eq!(poll(&stub, &mut dwell, 200.0), Vec::new());
+    assert_eq!(poll(&stub, &state, &mut dwell, 200.0), Vec::new());
 }
 
 #[test]
@@ -155,8 +169,9 @@ fn a_workspace_already_in_place_settles_without_moving() {
         listed("b", "w3", true),
         listed("a", "w2", false),
     ]));
+    let state = TempDir::new();
     let mut dwell = settled("w3", 100.0);
-    assert_eq!(poll(&stub, &mut dwell, 110.0), Vec::new());
+    assert_eq!(poll(&stub, &state, &mut dwell, 110.0), Vec::new());
     assert!(dwell.promoted);
 }
 
@@ -165,8 +180,9 @@ fn the_pin_itself_is_never_promoted() {
     let stub = Stub::start(
         Script::default().open(vec![listed("~", "w1", true), listed("a", "w2", false)]),
     );
+    let state = TempDir::new();
     let mut dwell = settled("w1", 100.0);
-    assert_eq!(poll(&stub, &mut dwell, 200.0), Vec::new());
+    assert_eq!(poll(&stub, &state, &mut dwell, 200.0), Vec::new());
 }
 
 #[test]
@@ -174,8 +190,9 @@ fn no_focused_workspace_promotes_nothing() {
     let stub = Stub::start(
         Script::default().open(vec![listed("~", "w1", false), listed("a", "w2", false)]),
     );
+    let state = TempDir::new();
     let mut dwell = Dwell::new();
-    assert_eq!(poll(&stub, &mut dwell, 200.0), Vec::new());
+    assert_eq!(poll(&stub, &state, &mut dwell, 200.0), Vec::new());
 }
 
 #[test]
@@ -183,15 +200,20 @@ fn the_pin_is_held_even_when_nothing_is_promoted() {
     let stub = Stub::start(
         Script::default().open(vec![listed("a", "w2", false), listed("~", "w1", true)]),
     );
+    let state = TempDir::new();
     let mut dwell = settled("w1", 100.0);
-    assert_eq!(poll(&stub, &mut dwell, 200.0), vec![("w1".to_string(), 0)]);
+    assert_eq!(
+        poll(&stub, &state, &mut dwell, 200.0),
+        vec![("w1".to_string(), 0)]
+    );
 }
 
 #[test]
 fn an_empty_workspace_list_does_nothing_and_leaves_the_clock_alone() {
     let stub = Stub::start(Script::default());
+    let state = TempDir::new();
     let mut dwell = settled("w3", 100.0);
-    assert_eq!(poll(&stub, &mut dwell, 200.0), Vec::new());
+    assert_eq!(poll(&stub, &state, &mut dwell, 200.0), Vec::new());
     assert_eq!(dwell.workspace_id.as_deref(), Some("w3"));
     assert_eq!(dwell.since, 100.0);
 }
@@ -201,10 +223,12 @@ fn a_pin_label_no_workspace_carries_holds_nothing_and_still_promotes() {
     let stub = Stub::start(
         Script::default().open(vec![listed("b", "w3", true), listed("a", "w2", false)]),
     );
+    let state = TempDir::new();
     let mut dwell = settled("w3", 100.0);
     tick(
         &stub.client(),
         &settings(10.0, "nothing"),
+        state.path(),
         &mut dwell,
         110.0,
     )
@@ -223,10 +247,25 @@ fn a_dwell_read_from_config_is_what_the_clock_waits_for() {
         listed("a", "w2", false),
         listed("b", "w3", true),
     ]));
+    let state = TempDir::new();
     let mut dwell = settled("w3", 100.0);
-    tick(&stub.client(), &settings(30.0, "~"), &mut dwell, 110.0).unwrap();
+    tick(
+        &stub.client(),
+        &settings(30.0, "~"),
+        state.path(),
+        &mut dwell,
+        110.0,
+    )
+    .unwrap();
     assert_eq!(stub.moves(), Vec::new(), "ten seconds is short of thirty");
-    tick(&stub.client(), &settings(30.0, "~"), &mut dwell, 130.0).unwrap();
+    tick(
+        &stub.client(),
+        &settings(30.0, "~"),
+        state.path(),
+        &mut dwell,
+        130.0,
+    )
+    .unwrap();
     assert_eq!(stub.moves(), vec![("w3".to_string(), 1)]);
 }
 
@@ -236,8 +275,9 @@ fn an_unreachable_socket_is_reported_so_the_grace_clock_can_start() {
         Socket::at("/private/tmp/recent-spaces-no-such.sock"),
         "test",
     );
+    let state = TempDir::new();
     let mut dwell = Dwell::new();
-    let failed = tick(&client, &settings(10.0, "~"), &mut dwell, 1.0);
+    let failed = tick(&client, &settings(10.0, "~"), state.path(), &mut dwell, 1.0);
     assert!(
         matches!(failed, Err(CallError::Connect { .. })),
         "a socket that is not there is a connect failure rather than a refusal, \
@@ -249,8 +289,16 @@ fn an_unreachable_socket_is_reported_so_the_grace_clock_can_start() {
 #[test]
 fn a_refused_workspace_list_is_reported_rather_than_read_as_no_workspaces() {
     let stub = Stub::start(Script::default().failing("workspace.list", "internal_error"));
+    let state = TempDir::new();
     let mut dwell = settled("w3", 100.0);
-    assert!(tick(&stub.client(), &settings(10.0, "~"), &mut dwell, 200.0).is_err());
+    assert!(tick(
+        &stub.client(),
+        &settings(10.0, "~"),
+        state.path(),
+        &mut dwell,
+        200.0
+    )
+    .is_err());
 }
 
 #[test]

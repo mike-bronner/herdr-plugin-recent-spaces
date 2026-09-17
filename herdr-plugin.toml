@@ -2,7 +2,7 @@ id = "mikebronner.recent-spaces"
 name = "Recent Spaces"
 version = "0.7.0"
 min_herdr_version = "0.9.0"
-description = "Keep the spaces sidebar in most-recently-used order"
+description = "Keep the spaces sidebar in most-recently-used or alphabetical order"
 
 # Windows is declared because the release publishes assets for it, and the two
 # are one decision rather than two. `["sh", ...]` cannot run on Windows, so a
@@ -65,3 +65,43 @@ platforms = ["macos", "linux"]
 [[startup]]
 command = ["powershell", "-File", "bin/launcher.ps1"]
 platforms = ["windows"]
+
+# The one control this plugin has: it switches the sidebar between the two
+# orderings and writes the choice to the plugin's state directory, where the
+# running watcher reads it on its next poll. The two processes share nothing
+# else, and they do not need to: Herdr hands an action the same
+# HERDR_PLUGIN_STATE_DIR it hands the [[startup]] command, measured on 0.9.1.
+#
+# A plugin manifest cannot declare a keybinding — RawPluginManifest has no
+# `keys` field — so a [[keys.command]] block written here would be ignored in
+# silence. Declaring the action is the whole of what a plugin can do; the user
+# names it from their own config.toml as `type = "plugin_action"`. The README
+# says how.
+#
+# The command is the launcher for the same reason [[startup]] uses it: it
+# rebuilds a binary the source has moved past, and a path under target/ would
+# break the moment the profile changed.
+#
+# 🚨 One entry, and `platforms` is absent on purpose. ✅ Measured against Herdr
+# 0.9.1 on 2026-09-17: two [[actions]] entries sharing an id are refused with
+# `duplicate_plugin_action_id` even when their `platforms` lists are disjoint,
+# and the whole manifest then fails to load. An action id has to be unique
+# across every entry, whatever `platforms` says, which is what makes the
+# doubling above legal and the same doubling here fatal. See
+# docs/herdr-behaviour.md.
+#
+# ⚠️ So the action runs `sh` everywhere and will not run on Windows. That is
+# the toggle only, not the watcher, which keeps its own PowerShell entry above.
+# A Windows user gets both orderings and no way to switch between them until
+# somebody can test bin/launcher.ps1.
+#
+# `contexts` is the sibling plugin's proven pair rather than the narrower
+# ["global"] this action would suggest. A keybinding is pressed inside a
+# workspace, and whether a global-only action answers one has not been
+# measured here.
+[[actions]]
+id = "toggle-order"
+title = "Toggle the spaces sidebar order"
+description = "Switch the sidebar between recency and alphabetical order"
+contexts = ["workspace", "global"]
+command = ["sh", "bin/launcher", "--toggle-order"]

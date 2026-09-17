@@ -5,6 +5,7 @@ use herdr_plugin_kit::api::client::{Client, Socket};
 use herdr_plugin_kit::env::Environment;
 use recent_spaces::claim::FileClaim;
 use recent_spaces::config;
+use recent_spaces::order;
 use recent_spaces::promote::{self, Dwell};
 use recent_spaces::retire;
 use recent_spaces::version;
@@ -19,7 +20,22 @@ fn main() {
             }
         }
         version::Request::Report => report_the_build(),
+        version::Request::Toggle => toggle_the_order(),
         version::Request::Refuse(argument) => refuse(&argument),
+    }
+}
+
+fn toggle_the_order() {
+    let env = Environment::from_process();
+    match order::toggle(&config::state_dir(&env)) {
+        Ok(mode) => note(&format!(
+            "the sidebar is now in {} order, from the next poll",
+            mode.name()
+        )),
+        Err(reason) => {
+            note(&reason);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -33,9 +49,10 @@ fn report_the_build() {
 
 fn refuse(argument: &str) -> ! {
     note(&format!(
-        "unknown argument `{}`; run it with no arguments to watch, or `{}` to report the build",
+        "unknown argument `{}`; run it with no arguments to watch, `{}` to report the build, or `{}` to switch the sidebar order",
         argument,
-        version::FLAG
+        version::FLAG,
+        version::TOGGLE_FLAG
     ));
     std::process::exit(2);
 }
@@ -58,7 +75,8 @@ fn run() {
         Ok(socket) => socket,
         Err(nothing) => return note(&nothing.to_string()),
     };
-    let claim = FileClaim::new(&config::state_dir(&env), socket.path());
+    let state_dir = config::state_dir(&env);
+    let claim = FileClaim::new(&state_dir, socket.path());
     let client = Client::new(socket, PLUGIN_ID);
     greet(&client);
 
@@ -68,7 +86,10 @@ fn run() {
     retire::watch(
         &claim,
         &token(),
-        |now| promote::tick(&client, &settings, &mut dwell, now).map_err(|e| e.to_string()),
+        |now| {
+            promote::tick(&client, &settings, &state_dir, &mut dwell, now)
+                .map_err(|e| e.to_string())
+        },
         || started.elapsed().as_secs_f64(),
         |seconds| std::thread::sleep(Duration::from_secs_f64(seconds)),
     );
