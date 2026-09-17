@@ -304,8 +304,8 @@ sh bin/launcher --version
 ```
 
 ```
-watch 0.7.0 (3d0715d, built 2026-09-11T23:55:59Z)
-manifest 0.7.0 at /Users/you/Developer/herdr-plugin-recent-spaces/herdr-plugin.toml
+watch 0.8.0 (3d0715d, built 2026-09-11T23:55:59Z)
+manifest 0.8.0 at /Users/you/Developer/herdr-plugin-recent-spaces/herdr-plugin.toml
 built from source on this machine
 ```
 
@@ -315,7 +315,7 @@ moment you ask, which is the copy Herdr itself reads. The third is how this
 binary arrived, and a downloaded one names the asset and the URL it came from:
 
 ```
-fetched watch-macos-arm64-3d0715d4a1b2 from https://github.com/.../releases/download/0.7.0/watch-macos-arm64-3d0715d4a1b2
+fetched watch-macos-arm64-3d0715d4a1b2 from https://github.com/.../releases/download/0.8.0/watch-macos-arm64-3d0715d4a1b2
 ```
 
 **All three lines are unconditional**, because a report with a line missing
@@ -325,7 +325,7 @@ When the first two disagree the binary says so in a fourth line, rather than
 leaving you to compare two numbers:
 
 ```
-STALE: this binary is 0.7.0 but the manifest is 0.7.1. Rebuild it with `cargo build --release`.
+STALE: this binary is 0.8.0 but the manifest is 0.8.1. Rebuild it with `cargo build --release`.
 ```
 
 **The remedy follows where the binary came from, because the two readers can do
@@ -334,7 +334,7 @@ source beside it. A downloaded one belongs to a release, and whoever installed i
 has no toolchain to rebuild with, so it is told the thing that works for them:
 
 ```
-STALE: this binary is 0.7.0 but the manifest is 0.7.1. This binary was fetched, so reinstall the plugin to get the 0.7.1 binary.
+STALE: this binary is 0.8.0 but the manifest is 0.8.1. This binary was fetched, so reinstall the plugin to get the 0.8.1 binary.
 ```
 
 The note beside a downloaded binary is what tells the two apart, and it is the
