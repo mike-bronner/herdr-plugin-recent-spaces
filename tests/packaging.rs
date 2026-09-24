@@ -494,7 +494,7 @@ fn the_release_calls_the_kit_rather_than_carrying_a_job_of_its_own() {
     assert_eq!(
         called_workflows(RELEASE_WORKFLOW),
         vec![format!(
-            "{}/.github/workflows/plugin-release.yml@0.4.2",
+            "{}/.github/workflows/plugin-release.yml@0.5.1",
             KIT
         )],
         "the kit is the one place that publishes, and it is what refuses the wrong \

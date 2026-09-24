@@ -556,6 +556,31 @@ than the crate. 0.4.0 withdrew both reusable workflows and added the `asset-name
 subcommand; 0.4.2 brought the release one back, reading the kit pin out of the
 plugin instead of out of an Actions context that never carried it.
 
+**Kit 0.5.1 is not a row either, and the binary did move.** It moved by 240
+bytes, and none of them is code. 0.4.4 adds the `update` and `report` modules.
+0.5.0 reshapes `dialog` and extends `update`, and 0.5.1 extends `update` again.
+All three sit behind features this plugin leaves off. `dialog` and `report` also
+share a new `surface` module, which is gated on either of them. Outside those
+four modules, `lib.rs` gains their three `pub mod` lines. `api/client.rs` widens
+its `dialog` gates to admit `report`, and imports from `surface` where it
+imported from `dialog`. Every one of those lines sits behind the same features,
+and the rest of the crate's source changed only in comments. **Measured
+2026-09-24**, two clones of `963c508`, the 0.8.0 release, each built with a
+dirty stamp, one on each kit. They are not the builds measured above, so their
+figures do not line up with those. The stripped binary went from 1,918,336 to
+1,918,576 bytes. Built unstripped, every section is the same size. Stripped,
+`__text`, `__const` and `__cstring` are the same size too, and both export the
+same 2,204 symbols. The whole 240 bytes are the export trie in `__LINKEDIT`,
+which holds the mangled names. Each name carries the kit crate's hash, and a new
+kit version gives it a new hash, so the same symbols compress to a different
+length.
+
+What 0.4.3 to 0.5.1 changed otherwise is the tooling. The kit's release workflow
+now runs `plugin_gate.py kit-pins`, which refuses a release whose three kit pins
+disagree. `the_release_caller_and_the_crate_pin_one_kit_between_them` asserts
+the same thing on every push, so a disagreement fails here before a release can
+reach it.
+
 The 0.1.0 figure was recorded as 3,257,616 bytes the day before. The same commit
 builds at 3,257,600 here on the same machine and the same profile, and the 16
 bytes are unexplained. A dirty build stamp was ruled out by measuring one. Both

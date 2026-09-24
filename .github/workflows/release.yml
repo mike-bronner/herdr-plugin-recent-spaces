@@ -55,6 +55,6 @@ jobs:
     # against another kit's tools, and
     # `the_release_caller_and_the_crate_pin_one_kit_between_them` in
     # tests/packaging.rs fails the suite when they drift apart.
-    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-release.yml@0.4.2
+    uses: mike-bronner/herdr-plugin-kit/.github/workflows/plugin-release.yml@0.5.1
     permissions:
       contents: write
