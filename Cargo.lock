@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "recent-spaces"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "herdr-plugin-kit",
  "herdr-plugin-kit-build",
