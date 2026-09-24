@@ -581,6 +581,30 @@ disagree. `the_release_caller_and_the_crate_pin_one_kit_between_them` asserts
 the same thing on every push, so a disagreement fails here before a release can
 reach it.
 
+**Kit 0.5.2 is not a row either, and the binary moved 16 bytes down.** The
+crate's `src/` changes in one file, `update.rs`, and that module sits behind the
+`update` feature this plugin leaves off. Outside `update.rs` and its tests, both
+crates change only their `version` lines, and nothing under the kit's
+`templates/` changed. **Measured
+2026-09-24**, two clones of `899ac27`, each built with a dirty stamp, one on each
+kit. The stripped binary went from 1,918,576 to 1,918,560 bytes, and a second
+clean build of each read the same. The first figure is the one the 0.5.1 bump
+measured on that kit. Built unstripped, every section is the same size.
+Stripped, `__text`, `__const` and `__cstring` are the same size too, and both
+export the same 2,204 symbols. `__text` holds the same instructions in a
+different order. Sorted, the two listings differ by 32 instructions on each side,
+and every one is an `adrp` or `add` that forms an address. The export trie in
+`__LINKEDIT` is 24 bytes shorter. Stripped, `__gcc_except_tab` and `__eh_frame`
+are each 4 bytes shorter, and those 8 bytes are unexplained.
+
+What 0.5.2 changed otherwise is the tooling. `plugin_gate.py` gains `pin-block`,
+which compares every copy of the kit pin resolution under `.github/workflows/`
+with the pinned kit's, comments included. 0.5.2 also rewrote that block's
+opening comment to name the new check. This plugin's copy matched 0.5.1's text
+exactly, and it failed `pin-block` on that comment alone until it was re-copied.
+`kit-gates` now runs `pin-block` after the version gate. The kit's release
+workflow changed only in that comment and in the caller its usage example shows.
+
 The 0.1.0 figure was recorded as 3,257,616 bytes the day before. The same commit
 builds at 3,257,600 here on the same machine and the same profile, and the 16
 bytes are unexplained. A dirty build stamp was ruled out by measuring one. Both
@@ -930,7 +954,7 @@ Three jobs:
 
 | Job | What it settles |
 | --- | --- |
-| `kit-gates` | `bin/` still matches the kit's templates, and the versions and the tag form agree |
+| `kit-gates` | `bin/` still matches the kit's templates, the versions and the tag form agree, and the copied kit pin resolution is the kit's text |
 | `gates` | the suite, the formatting, and clippy with warnings denied |
 | `build` | all six release targets compile and link, on native runners |
 
